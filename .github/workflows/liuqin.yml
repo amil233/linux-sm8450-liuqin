@@ -12,10 +12,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: ${{ github.repository_owner }}/xiaomipad-6pro-mainline
           ref: main

@@ -62,10 +62,18 @@
 		 *     simplefb_driver_init  the same framebuffer and the two consoles
 		 *                         do not draw over each other. Costs nothing:
 		 *                         if the boot gets that far we have USB.
+		 *   qcom_q6v5_pas.slpi_auto_boot=0 - stops the kernel from booting
+		 *                         the SLPI before userspace has provisioned
+		 *                         the sensor registry. Without it the sensor
+		 *                         PD reads its configuration once, too early,
+		 *                         and some boards reset at SLPI startup (see
+		 *                         the integration repo's known problems). The
+		 *                         userspace service owns the bring-up, as on
+		 *                         the device-tested 6.17 branch.
 		 * stdout-path is not used by either console -- it names the GENI debug
 		 * UART, which is not brought out on a retail unit.
 		 */
-		bootargs = "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init initcall_debug ignore_loglevel clk_ignore_unused pd_ignore_unused rootwait mtdoops.dump_oops=1 hung_task_panic=1 softlockup_panic=1 panic=15";
+		bootargs = "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init initcall_debug ignore_loglevel clk_ignore_unused pd_ignore_unused rootwait mtdoops.dump_oops=1 hung_task_panic=1 softlockup_panic=1 panic=15 qcom_q6v5_pas.slpi_auto_boot=0";
 
 		framebuffer: framebuffer@b8000000 {
 			compatible = "simple-framebuffer";

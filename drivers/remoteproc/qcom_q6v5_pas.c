@@ -36,6 +36,10 @@
 
 #define MAX_ASSIGN_COUNT 3
 
+static bool slpi_auto_boot = true;
+module_param(slpi_auto_boot, bool, 0444);
+MODULE_PARM_DESC(slpi_auto_boot, "Boot SLPI automatically before userspace is ready");
+
 struct qcom_pas_data {
 	int crash_reason_smem;
 	const char *firmware_name;
@@ -836,6 +840,8 @@ static int qcom_pas_probe(struct platform_device *pdev)
 
 	rproc->has_iommu = of_property_present(pdev->dev.of_node, "iommus");
 	rproc->auto_boot = desc->auto_boot;
+	if (desc->sysmon_name && !strcmp(desc->sysmon_name, "slpi"))
+		rproc->auto_boot = rproc->auto_boot && slpi_auto_boot;
 	rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_NONE);
 
 	pas = rproc->priv;

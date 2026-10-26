@@ -693,7 +693,18 @@ static const struct panel_desc pipa_desc = {
 		.block_pred_enable = true,
 	},
 	.format = MIPI_DSI_FMT_RGB888,
-	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
+	/*
+	 * The link configuration mirrors the vendor DT for both liuqin NT36532
+	 * modules: qcom,mdss-dsi-traffic-mode = "burst_mode" -> VIDEO_BURST,
+	 * qcom,mdss-dsi-lp11-init and on-command-state "dsi_lp_mode" -> LPM,
+	 * and the absence of qcom,mdss-dsi-non-continuous-clock -> a
+	 * continuous clock, so MIPI_DSI_CLOCK_NON_CONTINUOUS stays off.  The
+	 * panel only accepts its init sequence, exit sleep and display on
+	 * over low-power commands; in high-power mode it ignores them, stays
+	 * in sleep and shows nothing while the whole DRM pipeline is green.
+	 */
+	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+		      MIPI_DSI_MODE_LPM,
 	.drm_mode = pipa_mode_120,
 	.init_sequence = pipa_init_sequence,
 	.reset_sequence = pipa_reset
@@ -723,7 +734,8 @@ static const struct panel_desc pipa_tm_desc = {
 		.block_pred_enable = true,
 	},
 	.format = MIPI_DSI_FMT_RGB888,
-	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
+	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+		      MIPI_DSI_MODE_LPM,
 	.drm_mode = pipa_mode_120,
 	.init_sequence = m81_36_02_0a_init_sequence,
 	.reset_sequence = pipa_reset

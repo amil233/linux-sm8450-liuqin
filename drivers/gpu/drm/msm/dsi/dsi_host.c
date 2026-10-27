@@ -1161,6 +1161,40 @@ static void dsi_sw_reset(struct msm_dsi_host *msm_host)
 	}
 }
 
+/*
+ * DIAG (temporary, black-panel hunt): dump the DSI controller registers that
+ * the vendor kernel leaves behind on this very tablet while its panel works.
+ * The vendor's sde_dbg exposes the same addresses (dsi0_ctrl_reg), so the two
+ * dumps are directly comparable register for register.  Remove once the panel
+ * lights.
+ */
+static void dsi_diag_dump_regs(struct msm_dsi_host *msm_host)
+{
+	struct device *dev = &msm_host->pdev->dev;
+
+	dev_info(dev,
+		 "DIAG dsi%d: CTRL=%08x STATUS0=%08x FIFO=%08x VID_CFG0=%08x\n",
+		 msm_host->id,
+		 dsi_read(msm_host, REG_DSI_CTRL),
+		 dsi_read(msm_host, REG_DSI_STATUS0),
+		 dsi_read(msm_host, REG_DSI_FIFO_STATUS),
+		 dsi_read(msm_host, REG_DSI_VID_CFG0));
+	dev_info(dev,
+		 "DIAG dsi%d: ACTIVE_H=%08x ACTIVE_V=%08x TOTAL=%08x HSYNC=%08x\n",
+		 msm_host->id,
+		 dsi_read(msm_host, REG_DSI_ACTIVE_H),
+		 dsi_read(msm_host, REG_DSI_ACTIVE_V),
+		 dsi_read(msm_host, REG_DSI_TOTAL),
+		 dsi_read(msm_host, REG_DSI_ACTIVE_HSYNC));
+	dev_info(dev,
+		 "DIAG dsi%d: CMD_DMA_CTRL=%08x DSC_CTRL=%08x LANE_STATUS=%08x CLKOUT=%08x\n",
+		 msm_host->id,
+		 dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL),
+		 dsi_read(msm_host, REG_DSI_VIDEO_COMPRESSION_MODE_CTRL),
+		 dsi_read(msm_host, REG_DSI_LANE_STATUS),
+		 dsi_read(msm_host, REG_DSI_CLKOUT_TIMING_CTRL));
+}
+
 static void dsi_op_mode_config(struct msm_dsi_host *msm_host,
 					bool video_mode, bool enable)
 {
@@ -1184,6 +1218,9 @@ static void dsi_op_mode_config(struct msm_dsi_host *msm_host,
 	}
 
 	dsi_write(msm_host, REG_DSI_CTRL, dsi_ctrl);
+
+	if (enable)
+		dsi_diag_dump_regs(msm_host);
 }
 
 static void dsi_set_tx_power_mode(int mode, struct msm_dsi_host *msm_host)

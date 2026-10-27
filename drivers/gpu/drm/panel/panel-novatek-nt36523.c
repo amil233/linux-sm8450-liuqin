@@ -1581,6 +1581,14 @@ static int nt36523_prepare(struct drm_panel *panel)
 
 		drm_dsc_pps_payload_pack(&pps, &pinfo->dsc);
 
+		dev_info(panel->dev,
+			 "dsc: slice %ux%u count %u bpp %u bpc %u chunk %u block_pred %u\n",
+			 pinfo->dsc.slice_width, pinfo->dsc.slice_height,
+			 pinfo->dsc.slice_count, pinfo->dsc.bits_per_pixel,
+			 pinfo->dsc.bits_per_component, pinfo->dsc.slice_chunk_size,
+			 pinfo->dsc.block_pred_enable);
+		dev_info(panel->dev, "pps: %*ph\n", (int)sizeof(pps), &pps);
+
 		ret = mipi_dsi_picture_parameter_set(dsi, &pps);
 		if (ret < 0) {
 			regulator_bulk_disable(pinfo->num_supplies, pinfo->supplies);

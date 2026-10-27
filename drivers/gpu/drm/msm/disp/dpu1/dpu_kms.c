@@ -312,9 +312,12 @@ static const struct dpu_diag_win dpu_diag_wins[] = {
 	{ "intf_2",    0x36000, 0x80 },
 	{ "lm_0",      0x44000, 0x40 },
 	{ "dspp_0",    0x54000, 0x40 },
-	{ "pp_0",      0x6a000, 0x40 },
+	{ "pp_0",      0x69000, 0x100 },
+	{ "pp_1",      0x6a000, 0x100 },
+	{ "dsc_0_top", 0x80000, 0x10 },
 	{ "dsc_0_enc", 0x80100, 0x20 },
 	{ "dsc_0_ctl", 0x80f00, 0x10 },
+	{ "dsc_2_top", 0x81000, 0x10 },
 	{ "dsc_2_enc", 0x81100, 0x20 },
 	{ "dsc_2_ctl", 0x81f00, 0x10 },
 };

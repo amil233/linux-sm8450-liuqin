@@ -878,13 +878,21 @@ static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
 {
 	struct nt36532 *ctx = file->private_data;
 	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
-	char buf[32];
-	u8 power_mode = 0xff;
+	char buf[96];
+	u8 power_mode = 0xff, display_mode = 0xff;
+	u8 addr_mode = 0xff, pixel_format = 0xff;
+	int n;
 
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power_mode, 1);
-	snprintf(buf, sizeof(buf), "0x%02x\n", power_mode);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display_mode, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &addr_mode, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_PIXEL_FORMAT, &pixel_format, 1);
 
-	return simple_read_from_buffer(ubuf, len, ppos, buf, strlen(buf));
+	n = snprintf(buf, sizeof(buf),
+		     "power=0x%02x display=0x%02x addr=0x%02x pixfmt=0x%02x\n",
+		     power_mode, display_mode, addr_mode, pixel_format);
+
+	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
 }
 
 static const struct file_operations nt36532_diag_dcs_fops = {

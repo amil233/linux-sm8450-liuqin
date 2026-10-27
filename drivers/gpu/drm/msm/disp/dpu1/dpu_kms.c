@@ -11,6 +11,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/dma-buf.h>
+#include <linux/seq_file.h>
 #include <linux/of_irq.h>
 #include <linux/pm_opp.h>
 
@@ -288,6 +289,58 @@ static void dpu_debugfs_sspp_init(struct dpu_kms *dpu_kms, struct dentry *debugf
 	}
 }
 
+
+/*
+ * DIAG (temporary, black-panel hunt): one file that dumps every block the
+ * video path touches, so a single boot answers all of the questions instead of
+ * one per rebuild.  Offsets are the sm8450 catalog bases, which are relative to
+ * the display-controller mmio in the DT (0xae01000 on this board); the vendor's
+ * sde_dbg uses the same blocks from 0xae00000, i.e. exactly 0x1000 lower, so
+ * the two dumps are comparable register for register.
+ */
+struct dpu_diag_win {
+	const char *name;
+	u32 off;
+	u32 len;
+};
+
+static const struct dpu_diag_win dpu_diag_wins[] = {
+	{ "sspp_vig0", 0x04000, 0x60 },
+	{ "ctl_0",     0x15000, 0x80 },
+	{ "ctl_1",     0x16000, 0x80 },
+	{ "intf_1",    0x35000, 0x80 },
+	{ "intf_2",    0x36000, 0x80 },
+	{ "lm_0",      0x44000, 0x40 },
+	{ "dspp_0",    0x54000, 0x40 },
+	{ "pp_0",      0x6a000, 0x40 },
+	{ "dsc_0_enc", 0x80100, 0x20 },
+	{ "dsc_0_ctl", 0x80f00, 0x10 },
+	{ "dsc_2_enc", 0x81100, 0x20 },
+	{ "dsc_2_ctl", 0x81f00, 0x10 },
+};
+
+static int dpu_diag_regs_show(struct seq_file *s, void *unused)
+{
+	struct dpu_kms *dpu_kms = s->private;
+	int w, i;
+
+	for (w = 0; w < ARRAY_SIZE(dpu_diag_wins); w++) {
+		const struct dpu_diag_win *win = &dpu_diag_wins[w];
+
+		seq_printf(s, "== %s (0x%05x) ==\n", win->name, win->off);
+		for (i = 0; i < win->len; i += 16) {
+			seq_printf(s, "  +%03x: %08x %08x %08x %08x\n", i,
+				   readl(dpu_kms->mmio + win->off + i),
+				   readl(dpu_kms->mmio + win->off + i + 4),
+				   readl(dpu_kms->mmio + win->off + i + 8),
+				   readl(dpu_kms->mmio + win->off + i + 12));
+		}
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(dpu_diag_regs);
+
 static int dpu_kms_debugfs_init(struct msm_kms *kms, struct drm_minor *minor)
 {
 	struct dpu_kms *dpu_kms = to_dpu_kms(kms);
@@ -304,6 +357,8 @@ static int dpu_kms_debugfs_init(struct msm_kms *kms, struct drm_minor *minor)
 	entry = debugfs_create_dir("debug", minor->debugfs_root);
 
 	debugfs_create_x32(DPU_DEBUGFS_HWMASKNAME, 0600, entry, p);
+	debugfs_create_file("bundle", 0444, entry, dpu_kms,
+			    &dpu_diag_regs_fops);
 
 	dpu_debugfs_danger_init(dpu_kms, entry);
 	dpu_debugfs_vbif_init(dpu_kms, entry);

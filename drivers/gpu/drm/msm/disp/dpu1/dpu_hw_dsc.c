@@ -49,10 +49,24 @@ static void dpu_hw_dsc_config(struct dpu_hw_dsc *hw_dsc,
 {
 	struct dpu_hw_blk_reg_map *c = &hw_dsc->hw;
 	u32 data;
+
 	u32 slice_last_group_size;
 	u32 det_thresh_flatness;
 	bool is_cmd_mode = !(mode & DSC_MODE_VIDEO);
 	bool input_10_bits = dsc->bits_per_component == 10;
+
+	/*
+	 * DIAG (temporary, black-panel hunt): the panel decodes with the PPS it
+	 * was handed, the DPU encodes with these parameters.  If the two
+	 * disagree the panel shows nothing while every state reads fine, so
+	 * print exactly what the encoder is being told.
+	 */
+	pr_info("DIAG dsc%d: mode=%u init_lines=%u bpp=%u bpc=%u slice=%ux%u x%u chunk=%u first_bpg=%u bpg_off=%u\n",
+		hw_dsc->idx - DSC_0, mode, initial_lines,
+		dsc->bits_per_pixel, dsc->bits_per_component,
+		dsc->slice_width, dsc->slice_height, dsc->slice_count,
+		dsc->slice_chunk_size, dsc->first_line_bpg_offset,
+		dsc->second_line_bpg_offset);
 
 	DPU_REG_WRITE(c, DSC_COMMON_MODE, mode);
 

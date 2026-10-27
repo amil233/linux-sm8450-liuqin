@@ -6,12 +6,16 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
 #include <linux/err.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
 
 #define DEFAULT_BRIGHTNESS 1500
 #define MAX_BRIGHTNESS 2047
@@ -66,6 +70,101 @@ static int ktz8866_update_bits(struct ktz8866 *ktz, unsigned int reg,
 			       unsigned int mask, unsigned int val)
 {
 	return regmap_update_bits(ktz->regmap, reg, mask, val);
+}
+
+
+/*
+ * DIAG (temporary, black-panel hunt): the panel reports DCS 0x0a power mode
+ * 0x9e on this unit while the stock ROM reports 0x9d -- bit 0 (boost converter)
+ * off and bit 1 (idle) on.  The panel's charge pump is fed from the VSP/VSN this
+ * chip generates, so the bias registers are the last thing on the path that has
+ * never been compared with the vendor's.  Android exposes no i2c-dev, and the
+ * vendor driver does not use regmap, so neither side can be read passively:
+ * make the registers writable here and sweep them against the panel's own
+ * reported state instead.
+ *
+ *	cat /sys/kernel/debug/ktz8866/regs
+ *	echo "0a 11" > /sys/kernel/debug/ktz8866/regs
+ */
+static int ktz8866_diag_show(struct seq_file *s, void *unused)
+{
+	struct ktz8866 *ktz = s->private;
+	unsigned int reg, val;
+
+	for (reg = 0; reg <= REG_MAX; reg++) {
+		if (regmap_read(ktz->regmap, reg, &val))
+			continue;
+		seq_printf(s, "%02x: %02x\n", reg, val);
+	}
+
+	return 0;
+}
+
+static ssize_t ktz8866_diag_write(struct file *file, const char __user *ubuf,
+				  size_t len, loff_t *ppos)
+{
+	struct seq_file *s = file->private_data;
+	struct ktz8866 *ktz = s->private;
+	unsigned int reg, val;
+	char buf[32];
+	int ret;
+
+	if (len >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, len))
+		return -EFAULT;
+	buf[len] = '\0';
+
+	{
+		char *sep = strchr(buf, ' ');
+		unsigned int r, v;
+		int rc;
+
+		if (!sep)
+			return -EINVAL;
+		*sep = '\0';
+		rc = kstrtouint(buf, 16, &r);
+		if (rc)
+			return rc;
+		rc = kstrtouint(sep + 1, 16, &v);
+		if (rc)
+			return rc;
+		reg = r;
+		val = v;
+	}
+	if (reg > REG_MAX || val > 0xff)
+		return -EINVAL;
+
+	ret = regmap_write(ktz->regmap, reg, val);
+	if (ret)
+		return ret;
+
+	pr_info("DIAG ktz8866: wrote %02x = %02x\n", reg, val);
+
+	return len;
+}
+
+static int ktz8866_diag_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ktz8866_diag_show, inode->i_private);
+}
+
+static const struct file_operations ktz8866_diag_fops = {
+	.open = ktz8866_diag_open,
+	.read = seq_read,
+	.write = ktz8866_diag_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static void ktz8866_diag_init(struct ktz8866 *ktz)
+{
+	struct dentry *dir = debugfs_create_dir("ktz8866", NULL);
+
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+	debugfs_create_file("regs", 0600, dir, ktz, &ktz8866_diag_fops);
 }
 
 static int ktz8866_backlight_update_status(struct backlight_device *backlight_dev)
@@ -164,6 +263,8 @@ static int ktz8866_probe(struct i2c_client *client)
 				"failed to register backlight device\n");
 
 	ktz8866_init(ktz);
+
+	ktz8866_diag_init(ktz);
 
 	i2c_set_clientdata(client, backlight_dev);
 	backlight_update_status(backlight_dev);

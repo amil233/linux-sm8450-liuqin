@@ -1029,18 +1029,25 @@ static int nt36532_enable(struct drm_panel *panel)
 
 	usleep_range(10000, 11000);
 
-	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
+	/*
+	 * The no_dsc diagnostic leaves the DSI host uncompressed; sending the
+	 * PPS here would tell the panel to decode a bitstream that is no longer
+	 * there, so both ends must agree on the mode.
+	 */
+	if (!no_dsc) {
+		drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
-	print_hex_dump(KERN_INFO, "DSC:", DUMP_PREFIX_NONE, 16,
-	       1, (void *)&pps, sizeof(pps), false);
+		print_hex_dump(KERN_INFO, "DSC:", DUMP_PREFIX_NONE, 16,
+		       1, (void *)&pps, sizeof(pps), false);
 
-	ret = mipi_dsi_picture_parameter_set(dsi, &pps);
-	if (ret < 0) {
-		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
-		return ret;
+		ret = mipi_dsi_picture_parameter_set(dsi, &pps);
+		if (ret < 0) {
+			dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
+			return ret;
+		}
+
+		msleep(28);
 	}
-
-	msleep(28);
 
 	nt36532_diag_panel_state(ctx, "enabled");
 

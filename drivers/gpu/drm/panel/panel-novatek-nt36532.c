@@ -2,6 +2,7 @@
 // Copyright (c) 2024 Luka Panio <lukapanio@gmail.com>
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -10,6 +11,7 @@
 #include <linux/of_graph.h>
 #include <linux/init.h>
 #include <linux/string.h>
+#include <linux/uaccess.h>
 #include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
@@ -826,6 +828,96 @@ static void nt36532_diag_panel_state(struct nt36532 *ctx, const char *when)
 		 when, ret, display_mode);
 }
 
+/*
+ * DIAG (temporary, black-panel hunt): the panel answers DCS reads and reports
+ * 0x9e while the stock ROM reports 0x9d (DCS 0x0a: bit 0 booster off, bit 1
+ * idle mode on).  Rather than guess which command flips those bits, expose a
+ * node that sends an arbitrary DCS command and immediately reports the power
+ * mode again, so the answer can be found on the running unit.
+ *
+ *	echo "0x38" > /sys/kernel/debug/nt36532/dcs	# exit idle mode
+ *
+ * Remove together with nt36532_diag_panel_state() once the panel lights.
+ */
+static ssize_t nt36532_diag_dcs_write(struct file *file,
+				      const char __user *ubuf,
+				      size_t len, loff_t *ppos)
+{
+	struct nt36532 *ctx = file->private_data;
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	u8 cmd[64];
+	size_t n = 0;
+	char *str, *cur, *tok;
+	ssize_t ret;
+	u8 power_mode = 0xff;
+
+	if (len == 0 || len > 200)
+		return -EINVAL;
+
+	str = memdup_user_nul(ubuf, len);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
+
+	cur = str;
+	while ((tok = strsep(&cur, " \t\n")) != NULL) {
+		u8 byte;
+
+		if (!*tok)
+			continue;
+		if (kstrtou8(tok, 0, &byte) || n >= ARRAY_SIZE(cmd)) {
+			kfree(str);
+			return -EINVAL;
+		}
+		cmd[n++] = byte;
+	}
+	kfree(str);
+
+	if (n < 1)
+		return -EINVAL;
+
+	ret = mipi_dsi_dcs_write(dsi, cmd[0], cmd + 1, n - 1);
+	msleep(60);
+
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power_mode, 1);
+	dev_info(&dsi->dev,
+		 "poke: cmd=0x%02x len=%zu write_ret=%zd power_mode=0x%02x\n",
+		 cmd[0], n - 1, ret, power_mode);
+
+	return len;
+}
+
+static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
+				     size_t len, loff_t *ppos)
+{
+	struct nt36532 *ctx = file->private_data;
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	char buf[32];
+	u8 power_mode = 0xff;
+
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power_mode, 1);
+	snprintf(buf, sizeof(buf), "0x%02x\n", power_mode);
+
+	return simple_read_from_buffer(ubuf, len, ppos, buf, strlen(buf));
+}
+
+static const struct file_operations nt36532_diag_dcs_fops = {
+	.open = simple_open,
+	.write = nt36532_diag_dcs_write,
+	.read = nt36532_diag_dcs_read,
+};
+
+static void nt36532_diag_poke_init(struct nt36532 *ctx)
+{
+	struct dentry *dir;
+
+	dir = debugfs_create_dir("nt36532", NULL);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+	debugfs_create_file("dcs", 0600, dir, ctx, &nt36532_diag_dcs_fops);
+}
+
+
 static int nt36532_prepare(struct drm_panel *panel)
 {
 	struct nt36532 *ctx = to_nt36532(panel);
@@ -1067,6 +1159,8 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 					     "Failed to attach to DSI%d\n", i);
 		}
 	}
+
+	nt36532_diag_poke_init(ctx);
 
 	return 0;
 }

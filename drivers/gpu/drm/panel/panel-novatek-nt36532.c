@@ -698,8 +698,10 @@ static const struct panel_desc pipa_desc = {
 	/*
 	 * The link configuration mirrors the vendor DT for both liuqin NT36532
 	 * modules: qcom,mdss-dsi-traffic-mode = "burst_mode" -> VIDEO_BURST,
-	 * qcom,mdss-dsi-lp11-init and on-command-state "dsi_lp_mode" -> LPM.
-	 * The panel only accepts its init sequence, exit sleep and display on
+	 * qcom,mdss-dsi-lp11-init and on-command-state "dsi_lp_mode" -> LPM,
+	 * and the absence of qcom,mdss-dsi-non-continuous-clock -> a
+	 * continuous clock, so MIPI_DSI_CLOCK_NON_CONTINUOUS stays off.  The
+	 * panel only accepts its init sequence, exit sleep and display on
 	 * over low-power commands; in high-power mode it ignores them, stays
 	 * in sleep and shows nothing while the whole DRM pipeline is green.
 	 */
@@ -734,23 +736,8 @@ static const struct panel_desc pipa_tm_desc = {
 		.block_pred_enable = true,
 	},
 	.format = MIPI_DSI_FMT_RGB888,
-	/*
-	 * The vendor never touches the clock lane for this panel: its
-	 * continuous-clock helper returns immediately when
-	 * qcom,mdss-dsi-force-clock-lane-hs is absent
-	 * (dsi_display.c, _dsi_display_continuous_clk_ctrl), and that property
-	 * is absent from the m81_36_02_0a node of the stock dtbo.  The vendor
-	 * registers while the panel works confirm it: DSI_LANE_CTRL reads
-	 * 0x01000000, i.e. HS_REQ_SEL_PHY (bit 24) at its power-on default and
-	 * CLKLN_HS_FORCE_REQUEST (bit 28) clear.
-	 *
-	 * Without MIPI_DSI_CLOCK_NON_CONTINUOUS the host does the opposite: it
-	 * clears bit 24 and sets bit 28, keeping the clock lane in HS through
-	 * BLLP.  Requesting the non-continuous clock makes the host skip that
-	 * block and leave the register exactly as the vendor does.
-	 */
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
+		      MIPI_DSI_MODE_LPM,
 	.drm_mode = pipa_mode_120,
 	.init_sequence = m81_36_02_0a_init_sequence,
 	.reset_sequence = pipa_reset

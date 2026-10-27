@@ -96,6 +96,16 @@ static inline void dpu_hw_ctl_trigger_start(struct dpu_hw_ctl *ctx)
 	trace_dpu_hw_ctl_trigger_start(ctx->pending_flush_mask,
 				       dpu_hw_ctl_get_flush_register(ctx));
 	DPU_REG_WRITE(&ctx->hw, CTL_START, 0x1);
+
+	/*
+	 * DIAG (temporary, black-panel hunt): record that the start was issued
+	 * and whether the block accepted it, so "never started" and "started
+	 * but the interface did not run" stop being guesses.
+	 */
+	pr_info("DIAG ctl%d: start issued, FLUSH=%08x START=%08x\n",
+		ctx->idx - CTL_0,
+		DPU_REG_READ(&ctx->hw, CTL_FLUSH),
+		DPU_REG_READ(&ctx->hw, CTL_START));
 }
 
 static inline bool dpu_hw_ctl_is_started(struct dpu_hw_ctl *ctx)

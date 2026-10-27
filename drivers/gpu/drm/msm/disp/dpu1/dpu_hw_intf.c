@@ -263,6 +263,18 @@ static void dpu_hw_intf_enable_timing_engine(
 	struct dpu_hw_blk_reg_map *c = &intf->hw;
 	/* Note: Display interface select is handled in top block hw layer */
 	DPU_REG_WRITE(c, INTF_TIMING_ENGINE_EN, enable != 0);
+
+	/*
+	 * DIAG (temporary, black-panel hunt): the panel stays black because the
+	 * video interface never runs -- its vsync irq stops counting while the
+	 * vendor's keeps going.  Print what actually reached the block.
+	 */
+	pr_info("DIAG intf%d: enable=%u TE=%08x CFG=%08x CFG2=%08x MUX=%08x\n",
+		intf->idx - INTF_0, enable,
+		DPU_REG_READ(c, INTF_TIMING_ENGINE_EN),
+		DPU_REG_READ(c, INTF_CONFIG),
+		DPU_REG_READ(c, INTF_CONFIG2),
+		DPU_REG_READ(c, INTF_MUX));
 }
 
 static void dpu_hw_intf_setup_prg_fetch(

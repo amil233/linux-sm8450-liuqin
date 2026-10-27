@@ -1419,6 +1419,10 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	if (crtc_state->ctm || crtc_state->gamma_lut)
 		topology.num_dspp = topology.num_lm;
 
+	pr_info("DIAG topology: lm=%u dsc=%u intf=%u dspp=%u cwb=%u\n",
+		topology.num_lm, topology.num_dsc, topology.num_intf,
+		topology.num_dspp, topology.cwb_enabled);
+
 	return topology;
 }
 

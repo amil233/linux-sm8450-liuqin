@@ -1229,6 +1229,10 @@ static void dpu_encoder_virt_atomic_mode_set(struct drm_encoder *drm_enc,
 
 	dpu_enc->dsc_mask = dsc_mask;
 
+	pr_info("DIAG enc_res: num_pp=%d num_dsc=%d num_ctl=%d dsc_mask=%08x pp0=%px dsc0=%px\n",
+		num_pp, num_dsc, num_ctl, dsc_mask,
+		dpu_enc->hw_pp[0], dpu_enc->hw_dsc[0]);
+
 	if ((dpu_enc->disp_info.intf_type == INTF_WB && conn_state->writeback_job) ||
 	    dpu_enc->disp_info.intf_type == INTF_DP) {
 		struct dpu_hw_blk *hw_cdm = NULL;
@@ -2038,6 +2042,9 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 		num_dsc++;
 	}
 
+	pr_info("DIAG prep_dsc: num_dsc=%d pic_width=%d slice_width=%d\n",
+		num_dsc, dsc->pic_width, dsc->slice_width);
+
 	pic_width = dsc->pic_width;
 
 	dsc_common_mode = 0;
@@ -2097,6 +2104,9 @@ void dpu_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc)
 			dpu_encoder_helper_hw_reset(dpu_enc->phys_encs[i]);
 		}
 	}
+
+	pr_info("DIAG kickoff: enc dsc=%px dsc0=%px pp0=%px\n",
+		dpu_enc->dsc, dpu_enc->hw_dsc[0], dpu_enc->hw_pp[0]);
 
 	if (dpu_enc->dsc)
 		dpu_encoder_prep_dsc(dpu_enc, dpu_enc->dsc);

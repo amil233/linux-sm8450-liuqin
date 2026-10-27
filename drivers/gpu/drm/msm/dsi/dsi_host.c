@@ -4,6 +4,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
@@ -16,6 +17,7 @@
 #include <linux/pm_opp.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/seq_file.h>
 #include <linux/spinlock.h>
 
 #include <video/mipi_display.h>
@@ -2019,6 +2021,49 @@ static int dsi_host_get_id(struct msm_dsi_host *msm_host)
 	return -EINVAL;
 }
 
+/*
+ * DIAG (temporary, black-panel hunt): a dump that can be taken at any time,
+ * not just at the moment the controller is enabled.  The one-shot print in
+ * dsi_op_mode_config runs before the first commit, so it cannot show whether
+ * the video engine is actually pumping frames or whether the FIFO underflows
+ * afterwards.  Compare these against the vendor's dsi0_ctrl_reg, which is
+ * readable at any time through its sde_dbg node.
+ */
+static int dsi_diag_regs_show(struct seq_file *s, void *unused)
+{
+	struct msm_dsi_host *msm_host = s->private;
+
+	seq_printf(s, "CTRL        %08x\n", dsi_read(msm_host, REG_DSI_CTRL));
+	seq_printf(s, "STATUS0     %08x\n", dsi_read(msm_host, REG_DSI_STATUS0));
+	seq_printf(s, "FIFO_STATUS %08x\n", dsi_read(msm_host, REG_DSI_FIFO_STATUS));
+	seq_printf(s, "VID_CFG0    %08x\n", dsi_read(msm_host, REG_DSI_VID_CFG0));
+	seq_printf(s, "ACTIVE_H    %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_H));
+	seq_printf(s, "ACTIVE_V    %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_V));
+	seq_printf(s, "TOTAL       %08x\n", dsi_read(msm_host, REG_DSI_TOTAL));
+	seq_printf(s, "ACTIVE_HSYNC %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_HSYNC));
+	seq_printf(s, "CMD_DMA_CTRL %08x\n", dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL));
+	seq_printf(s, "DSC_CTRL    %08x\n", dsi_read(msm_host, REG_DSI_VIDEO_COMPRESSION_MODE_CTRL));
+	seq_printf(s, "LANE_STATUS %08x\n", dsi_read(msm_host, REG_DSI_LANE_STATUS));
+	seq_printf(s, "LANE_CTRL   %08x\n", dsi_read(msm_host, REG_DSI_LANE_CTRL));
+	seq_printf(s, "CLKOUT      %08x\n", dsi_read(msm_host, REG_DSI_CLKOUT_TIMING_CTRL));
+	seq_printf(s, "CLK_STATUS  %08x\n", dsi_read(msm_host, REG_DSI_CLK_STATUS));
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(dsi_diag_regs);
+
+static void dsi_diag_regs_init(struct msm_dsi_host *msm_host)
+{
+	struct dentry *dir;
+	char name[16];
+
+	snprintf(name, sizeof(name), "dsi%d", msm_host->id);
+	dir = debugfs_create_dir(name, NULL);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+	debugfs_create_file("regs", 0444, dir, msm_host, &dsi_diag_regs_fops);
+}
+
 int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 {
 	struct msm_dsi_host *msm_host = NULL;
@@ -2056,6 +2101,8 @@ int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 		return dev_err_probe(&pdev->dev, msm_host->id,
 				     "%s: unable to identify DSI host index\n",
 				     __func__);
+
+	dsi_diag_regs_init(msm_host);
 
 	/* fixup base address by io offset */
 	msm_host->ctrl_base += cfg->io_offset;

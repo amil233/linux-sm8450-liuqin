@@ -945,7 +945,6 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 	u32 eol_byte_num;
 	u32 bytes_per_pkt;
 	u32 slice_per_pkt = msm_host->dsc_slice_per_pkt ?: 1;
-	int i;
 
 	/* first calculate dsc parameters and then program
 	 * compress mode registers
@@ -1003,31 +1002,6 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 	} else {
 		reg |= DSI_VIDEO_COMPRESSION_MODE_CTRL_WC(bytes_per_pkt);
 		dsi_write(msm_host, REG_DSI_VIDEO_COMPRESSION_MODE_CTRL, reg);
-
-		/*
-		 * The vendor leaves a full DSC block at 0x2a4..0x33c; the
-		 * upstream driver only programs 0x2a0.  Program the block for
-		 * the 144 Hz Tianma mode from the stock snapshot.
-		 */
-		if (msm_host->mode && msm_host->mode->clock == 1937416) {
-			static const u32 vendor_dsc_block[] = {
-				0x00000000, 0x39003900, 0x00000000, 0x00000000,
-				0x00000000, 0x3e2e0600, 0x0000f000, 0x00000000,
-				0x00000000, 0x00000004, 0x00000000, 0x00000000,
-				0x00000000, 0x00000000, 0x00000000, 0x00000000,
-				0x00000000, 0x00000000, 0x00000000, 0x00000000,
-				0x00000000, 0x00000000, 0x00000000, 0x0000ffff,
-				0x00000000, 0x00000000, 0x00000000, 0x00008421,
-				0x0033ffff, 0x0002a300, 0x00000143, 0x10ffffff,
-				0x0000b81f, 0x00000000, 0x000c2c0d, 0x33533000,
-				0xffffffff, 0xffffffff, 0xffffffff,
-			};
-
-			for (i = 0; i < ARRAY_SIZE(vendor_dsc_block); i++)
-				dsi_write(msm_host,
-					  REG_DSI_VIDEO_COMPRESSION_MODE_CTRL + 4 * (i + 1),
-					  vendor_dsc_block[i]);
-		}
 	}
 }
 

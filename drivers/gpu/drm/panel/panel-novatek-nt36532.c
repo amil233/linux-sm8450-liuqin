@@ -661,6 +661,36 @@ static int yudi_init_sequence(struct nt36532 *ctx)
 	return dsi_ctx.accum_err;
 }
 
+/*
+ * DIAG (temporary, black-panel hunt): the display comes up with every register
+ * matching the vendor and the bootloader's splash proving the panel, its rails,
+ * the DSI link and the DSC path all work, yet nothing reaches the glass.  The
+ * one thing that cannot be compared register for register is the DSC bitstream
+ * itself, so this mode bypasses it: 60 Hz uncompressed RGB888 fits in the link
+ * (900 px x 24 bpp x 60 Hz per link is about 1.2 Gbps per lane) and the DDIC
+ * decodes plain RGB until it is sent a PPS, so no PPS means no DSC.
+ *
+ *	no_dsc=1 on the kernel command line
+ */
+static bool no_dsc;
+module_param(no_dsc, bool, 0644);
+MODULE_PARM_DESC(no_dsc, "run the panel uncompressed at 60 Hz (diagnostic)");
+
+static const struct drm_display_mode pipa_mode_60 = {
+	.clock = (1800 + 200 + 4 + 92) * (2880 + 26 + 2 + 214) * 60 / 1000,
+	.hdisplay = 1800,
+	.hsync_start = 1800 + 200,
+	.hsync_end = 1800 + 200 + 4,
+	.htotal = 1800 + 200 + 4 + 92,
+	.vdisplay = 2880,
+	.vsync_start = 2880 + 26,
+	.vsync_end = 2880 + 26 + 2,
+	.vtotal = 2880 + 26 + 2 + 214,
+	.width_mm = 148,
+	.height_mm = 237,
+	.type = DRM_MODE_TYPE_DRIVER,
+};
+
 static const struct drm_display_mode pipa_mode_120 = {
 	.clock = (1800 + 200 + 4 + 92) * (2880 + 26 + 2 + 214) * 120 / 1000,
 	.hdisplay = 1800,
@@ -952,18 +982,23 @@ static int nt36532_prepare(struct drm_panel *panel)
 
 	nt36532_diag_panel_state(ctx, "post-init");
 
-	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
+	if (!no_dsc) {
+		drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
-	ret = mipi_dsi_picture_parameter_set(dsi, &pps);
-	if (ret < 0) {
-		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
-		goto fail;
-	}
+		ret = mipi_dsi_picture_parameter_set(dsi, &pps);
+		if (ret < 0) {
+			dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
+			goto fail;
+		}
 
-	ret = mipi_dsi_compression_mode(dsi, true);
-	if (ret < 0) {
-		dev_err(dev, "failed to enable compression mode: %d\n", ret);
-		goto fail;
+		ret = mipi_dsi_compression_mode(dsi, true);
+		if (ret < 0) {
+			dev_err(dev, "failed to enable compression mode: %d\n",
+				ret);
+			goto fail;
+		}
+	} else {
+		dev_info(dev, "diag: no_dsc set, panel runs uncompressed at 60 Hz\n");
 	}
 
 	msleep(120);
@@ -1044,7 +1079,8 @@ static int nt36532_get_modes(struct drm_panel *panel,
 {
 	struct nt36532 *ctx = to_nt36532(panel);
 	const struct drm_display_mode *mode;
-	mode = &(ctx->desc->drm_mode);
+
+	mode = no_dsc ? &pipa_mode_60 : &(ctx->desc->drm_mode);
 	return drm_connector_helper_get_modes_fixed(connector, mode);
 }
 
@@ -1144,10 +1180,12 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 	for (i = 0; i < ARRAY_SIZE(ctx->dsi); i++) {
 		if (!ctx->dsi[i])
 			continue;
-		/* This panel only supports DSC; unconditionally enable it */
-		ctx->dsi[i]->dsc = &ctx->dsc;
-		/* vendor packs two 450-px slices into each video packet */
-		ctx->dsi[i]->dsc_slice_per_pkt = 2;
+		/* This panel normally runs DSC; no_dsc bypasses it for diagnosis */
+		if (!no_dsc) {
+			ctx->dsi[i]->dsc = &ctx->dsc;
+			/* vendor packs two 450-px slices into each video packet */
+			ctx->dsi[i]->dsc_slice_per_pkt = 2;
+		}
 
 		ctx->dsi[i]->lanes = 4;
 		ctx->dsi[i]->format = MIPI_DSI_FMT_RGB888;

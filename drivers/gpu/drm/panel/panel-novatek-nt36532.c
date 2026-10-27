@@ -81,6 +81,19 @@ static void pipa_reset(struct nt36532 *ctx)
 	usleep_range(12000, 13000);
 }
 
+/* Vendor reset sequence for the Tianma module: <0 10 1 3 0 3 1 15>. */
+static void pipa_tm_reset(struct nt36532 *ctx)
+{
+	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	usleep_range(10000, 11000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(3000, 4000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	usleep_range(3000, 4000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(15000, 16000);
+}
+
 static void yudi_reset(struct nt36532 *ctx)
 {
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
@@ -768,10 +781,10 @@ static const struct panel_desc pipa_desc = {
 };
 
 /*
- * The Tianma module uses the vendor 144 Hz timing and its own init
- * sequence.  The DSC parameters are shared by the vendor's Tianma and
- * CSOT nodes; the reset timing and link flags are still the CSOT
- * defaults and need to be aligned with the vendor.
+ * The Tianma module uses the vendor 144 Hz timing, its own init sequence
+ * and the vendor reset sequence.  The DSC parameters are shared by the
+ * vendor's Tianma and CSOT nodes; the link flags carry VIDEO_BURST to
+ * match the vendor's burst_mode.
  */
 static const struct panel_desc pipa_tm_desc = {
 	.dsi_info = {
@@ -792,10 +805,11 @@ static const struct panel_desc pipa_tm_desc = {
 		.block_pred_enable = true,
 	},
 	.format = MIPI_DSI_FMT_RGB888,
-	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
+	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+		MIPI_DSI_CLOCK_NON_CONTINUOUS,
 	.drm_mode = pipa_mode_144,
 	.init_sequence = m81_36_02_0a_init_sequence,
-	.reset_sequence = pipa_reset
+	.reset_sequence = pipa_tm_reset
 };
 
 static const struct panel_desc yudi_desc = {

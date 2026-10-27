@@ -2038,6 +2038,7 @@ static int dsi_host_get_id(struct msm_dsi_host *msm_host)
 static int dsi_diag_regs_show(struct seq_file *s, void *unused)
 {
 	struct msm_dsi_host *msm_host = s->private;
+	unsigned int off;
 
 	seq_printf(s, "CTRL        %08x\n", dsi_read(msm_host, REG_DSI_CTRL));
 	seq_printf(s, "STATUS0     %08x\n", dsi_read(msm_host, REG_DSI_STATUS0));
@@ -2053,6 +2054,22 @@ static int dsi_diag_regs_show(struct seq_file *s, void *unused)
 	seq_printf(s, "LANE_CTRL   %08x\n", dsi_read(msm_host, REG_DSI_LANE_CTRL));
 	seq_printf(s, "CLKOUT      %08x\n", dsi_read(msm_host, REG_DSI_CLKOUT_TIMING_CTRL));
 	seq_printf(s, "CLK_STATUS  %08x\n", dsi_read(msm_host, REG_DSI_CLK_STATUS));
+
+	/*
+	 * The whole controller window, in the same layout the vendor's own
+	 * dump uses, so the two can be compared line by line instead of by
+	 * thirteen named registers.
+	 */
+	seq_puts(s, "== window ==\n");
+	for (off = 0; off < msm_host->ctrl_size; off += 16) {
+		int i;
+
+		seq_printf(s, "0x%08x:", off);
+		for (i = 0; i < 16; i += 4)
+			seq_printf(s, " %08x", dsi_read(msm_host, off + i));
+		seq_putc(s, '\n');
+	}
+
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(dsi_diag_regs);

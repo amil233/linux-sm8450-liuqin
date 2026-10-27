@@ -305,7 +305,7 @@ struct dpu_diag_win {
 };
 
 static const struct dpu_diag_win dpu_diag_wins[] = {
-	{ "sspp_vig0", 0x04000, 0x60 },
+	{ "sspp_vig0", 0x04000, 0x140 },
 	{ "ctl_0",     0x15000, 0x100 },
 	{ "ctl_1",     0x16000, 0x100 },
 	{ "intf_1",    0x35000, 0x280 },

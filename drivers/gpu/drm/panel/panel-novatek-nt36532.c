@@ -49,6 +49,21 @@ struct panel_desc {
 	struct drm_dsc_config dsc;
 };
 
+/*
+ * DIAG (temporary, black-panel hunt): the bootloader leaves this panel
+ * displaying its splash, and the panel goes black only once this driver takes
+ * over -- the same way on 6.17 and 7.0, so it is the shared handover that
+ * breaks it, not either kernel.  The handover does two things: reset the
+ * panel and replay the 216-packet init sequence.  Set this to skip both and
+ * leave whatever the bootloader programmed in place, which tells the two
+ * apart on the same image:
+ *
+ *	panel_novatek_nt36532.skip_panel_init=1   (built-in, so via cmdline)
+ */
+static bool skip_panel_init;
+module_param(skip_panel_init, bool, 0644);
+MODULE_PARM_DESC(skip_panel_init, "skip panel reset and init sequence (diagnostic)");
+
 static struct mipi_dsi_device *nt36532_cmd_dsi(struct nt36532 *ctx)
 {
 	return ctx->dsi[1] ?: ctx->dsi[0];
@@ -921,14 +936,18 @@ static int nt36532_prepare(struct drm_panel *panel)
 	if (ctx->dsi[1])
 		ctx->dsi[1]->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	ctx->desc->reset_sequence(ctx);
+	if (skip_panel_init) {
+		dev_info(dev, "diag: skipping panel reset and init sequence\n");
+	} else {
+		ctx->desc->reset_sequence(ctx);
 
-	msleep(120);
+		msleep(120);
 
-	ret = ctx->desc->init_sequence(ctx);
-	if (ret < 0) {
-		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
-		goto fail;
+		ret = ctx->desc->init_sequence(ctx);
+		if (ret < 0) {
+			dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
+			goto fail;
+		}
 	}
 
 	nt36532_diag_panel_state(ctx, "post-init");

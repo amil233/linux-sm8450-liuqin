@@ -790,6 +790,29 @@ static int nt36532_off(struct nt36532 *ctx)
 	return 0;
 }
 
+/*
+ * DIAG (temporary, black-panel hunt): the DSI/MDP register state is readable
+ * from userspace over the rescue shell, but the panel's own power/display
+ * state is not.  Read it back so "panel never woke up" and "panel is awake but
+ * shows nothing" stop being guesses.  0x0A bit 2 = display on, bit 3 = normal
+ * mode, bit 4 = sleep out.  Remove this helper once the panel lights.
+ */
+static void nt36532_diag_panel_state(struct nt36532 *ctx, const char *when)
+{
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	ssize_t ret;
+	u8 power_mode = 0xff;
+	u8 display_mode = 0xff;
+
+	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power_mode, 1);
+	dev_info(&dsi->dev, "diag[%s]: DCS 0x0A ret=%zd power_mode=0x%02x\n",
+		 when, ret, power_mode);
+
+	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display_mode, 1);
+	dev_info(&dsi->dev, "diag[%s]: DCS 0x0D ret=%zd display_mode=0x%02x\n",
+		 when, ret, display_mode);
+}
+
 static int nt36532_prepare(struct drm_panel *panel)
 {
 	struct nt36532 *ctx = to_nt36532(panel);
@@ -820,6 +843,8 @@ static int nt36532_prepare(struct drm_panel *panel)
 		goto fail;
 	}
 
+	nt36532_diag_panel_state(ctx, "post-init");
+
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
 	ret = mipi_dsi_picture_parameter_set(dsi, &pps);
@@ -835,6 +860,8 @@ static int nt36532_prepare(struct drm_panel *panel)
 	}
 
 	msleep(120);
+
+	nt36532_diag_panel_state(ctx, "prepared");
 
 	return 0;
 
@@ -872,6 +899,8 @@ static int nt36532_enable(struct drm_panel *panel)
 	}
 
 	msleep(28);
+
+	nt36532_diag_panel_state(ctx, "enabled");
 
 	return ret;
 }

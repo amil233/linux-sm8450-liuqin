@@ -6,6 +6,7 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
@@ -13,6 +14,7 @@
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
+#include <linux/seq_file.h>
 #include <linux/string.h>
 
 #include <video/mipi_display.h>
@@ -38,6 +40,7 @@ struct panel_info {
 	struct regulator_bulk_data supplies[3];
 	unsigned int num_supplies;
 	struct drm_dsc_config dsc;
+	struct dentry *debugfs;
 };
 
 struct panel_desc {
@@ -1634,6 +1637,7 @@ static void nt36523_remove(struct mipi_dsi_device *dsi)
 {
 	struct panel_info *pinfo = mipi_dsi_get_drvdata(dsi);
 
+	debugfs_remove_recursive(pinfo->debugfs);
 	drm_panel_remove(&pinfo->panel);
 }
 
@@ -1736,6 +1740,65 @@ static struct backlight_device *nt36523_create_backlight(struct mipi_dsi_device 
 	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
 					      &nt36523_bl_ops, &props);
 }
+
+/*
+ * Read-only panel state, for the black-panel investigation.  The panel is the
+ * only channel on this tablet, so the moment the kernel takes the DSI link over
+ * from the bootloader cannot be watched on the glass.  Sampling the panel's
+ * own status afterwards separates the two remaining cases: a panel that scans
+ * the frames we send (scanline advances, signal mode is video) and therefore
+ * shows the wrong picture, from a panel that never locks to the stream and
+ * stays in idle mode.
+ */
+static int nt36523_state_show(struct seq_file *s, void *unused)
+{
+	struct panel_info *pinfo = s->private;
+	const struct drm_display_mode *mode = &pinfo->desc->modes[0];
+	struct mipi_dsi_device *dsi = nt36523_cmd_dsi(pinfo);
+	u8 power = 0xff, signal = 0xff, display = 0xff;
+	u8 line = 0, first = 0, last = 0;
+	bool advancing = false;
+	int i, ret;
+
+	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power, 1);
+	if (ret < 0) {
+		seq_printf(s, "panel did not answer DCS 0x0a: %d\n", ret);
+		return 0;
+	}
+
+	if (mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SIGNAL_MODE, &signal, 1) < 0)
+		signal = 0xff;
+	if (mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display, 1) < 0)
+		display = 0xff;
+
+	for (i = 0; i < 16; i++) {
+		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SCANLINE, &line, 1);
+		if (ret < 0) {
+			seq_printf(s, "scanline read failed: %d\n", ret);
+			break;
+		}
+		if (i == 0)
+			first = line;
+		if (i > 0 && line != last)
+			advancing = true;
+		last = line;
+		msleep(20);
+	}
+
+	seq_printf(s, "power=0x%02x signal=0x%02x display=0x%02x\n",
+		   power, signal, display);
+	seq_printf(s, "scanline first=%u last=%u advancing=%s\n",
+		   first, last, advancing ? "yes" : "no");
+	seq_printf(s, "mode=%ux%u@%u htotal=%u vtotal=%u\n",
+		   mode->hdisplay, mode->vdisplay, drm_mode_vrefresh(mode),
+		   mode->htotal, mode->vtotal);
+	seq_printf(s, "links=%s lanes=%u dsc=%s\n",
+		   pinfo->dsi[1] ? "dual" : "single", dsi->lanes,
+		   pinfo->desc->dsc ? "on" : "off");
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(nt36523_state);
 
 static int nt36523_probe(struct mipi_dsi_device *dsi)
 {
@@ -1841,6 +1904,11 @@ static int nt36523_probe(struct mipi_dsi_device *dsi)
 		if (ret < 0)
 			return dev_err_probe(dev, ret, "cannot attach to DSI%d host.\n", i);
 	}
+
+	pinfo->debugfs = debugfs_create_dir("nt36523", NULL);
+	if (!IS_ERR_OR_NULL(pinfo->debugfs))
+		debugfs_create_file("state", 0400, pinfo->debugfs, pinfo,
+				    &nt36523_state_fops);
 
 	return 0;
 }

@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
+#include <linux/string.h>
 #include <linux/uaccess.h>
 
 #define DEFAULT_BRIGHTNESS 1500

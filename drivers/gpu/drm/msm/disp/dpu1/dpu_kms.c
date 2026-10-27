@@ -325,14 +325,16 @@ static const struct dpu_diag_win dpu_diag_wins[] = {
 static int dpu_diag_regs_show(struct seq_file *s, void *unused)
 {
 	struct dpu_kms *dpu_kms = s->private;
-	int w, i;
+	unsigned int w;
+	int i;
 
 	for (w = 0; w < ARRAY_SIZE(dpu_diag_wins); w++) {
 		const struct dpu_diag_win *win = &dpu_diag_wins[w];
 
 		seq_printf(s, "== %s (0x%05x) ==\n", win->name, win->off);
 		for (i = 0; i < win->len; i += 16) {
-			seq_printf(s, "  +%03x: %08x %08x %08x %08x\n", i,
+			seq_printf(s, "  +%03x: %08x %08x %08x %08x\n",
+				   (unsigned int)i,
 				   readl(dpu_kms->mmio + win->off + i),
 				   readl(dpu_kms->mmio + win->off + i + 4),
 				   readl(dpu_kms->mmio + win->off + i + 8),

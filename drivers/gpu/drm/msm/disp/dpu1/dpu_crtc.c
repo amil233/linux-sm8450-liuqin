@@ -1421,7 +1421,7 @@ static struct msm_display_topology dpu_crtc_get_topology(
 
 	pr_info("DIAG topology: lm=%u dsc=%u intf=%u dspp=%u cwb=%u\n",
 		topology.num_lm, topology.num_dsc, topology.num_intf,
-		topology.num_dspp, topology.cwb_enabled);
+		topology.num_dspp, (unsigned int)topology.cwb_enabled);
 
 	return topology;
 }

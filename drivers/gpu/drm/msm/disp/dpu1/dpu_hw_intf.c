@@ -270,7 +270,7 @@ static void dpu_hw_intf_enable_timing_engine(
 	 * vendor's keeps going.  Print what actually reached the block.
 	 */
 	pr_info("DIAG intf%d: enable=%u TE=%08x CFG=%08x CFG2=%08x MUX=%08x\n",
-		intf->idx - INTF_0, enable,
+		intf->idx - INTF_0, (unsigned int)enable,
 		DPU_REG_READ(c, INTF_TIMING_ENGINE_EN),
 		DPU_REG_READ(c, INTF_CONFIG),
 		DPU_REG_READ(c, INTF_CONFIG2),

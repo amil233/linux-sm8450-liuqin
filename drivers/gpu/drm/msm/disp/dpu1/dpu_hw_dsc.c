@@ -63,10 +63,13 @@ static void dpu_hw_dsc_config(struct dpu_hw_dsc *hw_dsc,
 	 */
 	pr_info("DIAG dsc%d: mode=%u init_lines=%u bpp=%u bpc=%u slice=%ux%u x%u chunk=%u first_bpg=%u bpg_off=%u\n",
 		hw_dsc->idx - DSC_0, mode, initial_lines,
-		dsc->bits_per_pixel, dsc->bits_per_component,
-		dsc->slice_width, dsc->slice_height, dsc->slice_count,
-		dsc->slice_chunk_size, dsc->first_line_bpg_offset,
-		dsc->second_line_bpg_offset);
+		(unsigned int)dsc->bits_per_pixel,
+		(unsigned int)dsc->bits_per_component,
+		(unsigned int)dsc->slice_width, (unsigned int)dsc->slice_height,
+		(unsigned int)dsc->slice_count,
+		(unsigned int)dsc->slice_chunk_size,
+		(unsigned int)dsc->first_line_bpg_offset,
+		(unsigned int)dsc->second_line_bpg_offset);
 
 	DPU_REG_WRITE(c, DSC_COMMON_MODE, mode);
 

@@ -706,6 +706,27 @@ static const struct drm_display_mode pipa_mode_120 = {
 	.type = DRM_MODE_TYPE_DRIVER,
 };
 
+/*
+ * Tianma module timing from the vendor: the stock kernel's DRM state runs
+ * 1800x2880 at 50 Hz with htotal 2394 / vtotal 5620, and Android runs the
+ * same porches at 144 Hz.  pipa_mode_120 is the DT default, not the mode
+ * this unit uses.
+ */
+static const struct drm_display_mode pipa_mode_144 = {
+	.clock = 1937416,
+	.hdisplay = 1800,
+	.hsync_start = 2298,
+	.hsync_end = 2302,
+	.htotal = 2394,
+	.vdisplay = 2880,
+	.vsync_start = 5404,
+	.vsync_end = 5406,
+	.vtotal = 5620,
+	.width_mm = 148,
+	.height_mm = 237,
+	.type = DRM_MODE_TYPE_DRIVER,
+};
+
 static const struct drm_display_mode yudi_mode_120 = {
 	.clock = 2 * (1440 + 65 + 10 + 38) * (1800 + 26 + 2 + 118) * 120 / 1000,
 	.hdisplay = 2 * (1440),
@@ -747,9 +768,10 @@ static const struct panel_desc pipa_desc = {
 };
 
 /*
- * liuqin is also fitted with the Tianma module of the same NT36532 panel
- * (m81_36_02_0a).  Its init sequence differs from the CSOT module (the mode,
- * DSC parameters and reset sequence do not), so only .init_sequence changes.
+ * The Tianma module uses the vendor 144 Hz timing and its own init
+ * sequence.  The DSC parameters are shared by the vendor's Tianma and
+ * CSOT nodes; the reset timing and link flags are still the CSOT
+ * defaults and need to be aligned with the vendor.
  */
 static const struct panel_desc pipa_tm_desc = {
 	.dsi_info = {
@@ -771,7 +793,7 @@ static const struct panel_desc pipa_tm_desc = {
 	},
 	.format = MIPI_DSI_FMT_RGB888,
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
-	.drm_mode = pipa_mode_120,
+	.drm_mode = pipa_mode_144,
 	.init_sequence = m81_36_02_0a_init_sequence,
 	.reset_sequence = pipa_reset
 };

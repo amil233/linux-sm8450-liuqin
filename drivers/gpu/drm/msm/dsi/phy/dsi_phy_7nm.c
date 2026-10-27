@@ -8,10 +8,27 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/iopoll.h>
+#include <linux/module.h>
+
 
 #include "dsi_phy.h"
 #include "dsi.xml.h"
 #include "dsi_phy_7nm.xml.h"
+
+/*
+ * DIAG (temporary, black-panel hunt): this panel was captured on the stock
+ * ROM while it was working, and five of the fourteen timing values this
+ * driver computes differ from what the vendor had programmed there
+ * (clk_trail, hs_exit, hs_rqst, clk_pre, clk_post).  Those govern the LP/HS
+ * transitions, so a wrong one is enough to stop the panel locking while
+ * every readable register still looks right.  Allow the captured values to
+ * be written verbatim instead.
+ *
+ *	dsi_phy_7nm.vendor_phy_timing=1
+ */
+static bool vendor_phy_timing;
+module_param(vendor_phy_timing, bool, 0644);
+MODULE_PARM_DESC(vendor_phy_timing, "use the vendor PHY timing values (diagnostic)");
 
 /*
  * DSI PLL 7nm - clock diagram (eg: DSI0): TODO: updated CPHY diagram
@@ -1182,6 +1199,19 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 		       base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_12);
 		writel(timing->shared_timings.clk_post,
 		       base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_13);
+	}
+
+	if (vendor_phy_timing && !phy->cphy_mode) {
+		static const u32 vt[14] = {
+			0x00, 0x22, 0x08, 0x09, 0x19, 0x23, 0x09,
+			0x09, 0x09, 0x02, 0x04, 0x00, 0x1c, 0x0e,
+		};
+		int i;
+
+		for (i = 0; i < ARRAY_SIZE(vt); i++)
+			writel(vt[i],
+			       base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_0 + 4 * i);
+		dev_info(&phy->pdev->dev, "diag: vendor PHY timings applied\n");
 	}
 
 	/* DSI lane settings */

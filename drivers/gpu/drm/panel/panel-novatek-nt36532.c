@@ -711,6 +711,16 @@ module_param_named(pps_per_link_pic_width, pps_per_link_pic_width, bool, 0644);
 MODULE_PARM_DESC(pps_per_link_pic_width,
 	"pack the PPS with the per-link picture width instead of the bonded width");
 
+/*
+ * DIAG (temporary): the stock on-command set never contains DCS 0x9b, while
+ * this driver enables compression mode through it.  On some DDICs 0x9b
+ * switches the receiver into a mode that conflicts with video-mode DSC and
+ * leaves the panel blank.  Boot with ...no_9b=1 to leave it out entirely.
+ */
+static bool no_9b;
+module_param_named(no_9b, no_9b, bool, 0644);
+MODULE_PARM_DESC(no_9b, "do not send the DCS 0x9b compression-mode command");
+
 static const struct drm_display_mode pipa_mode_60 = {
 	.clock = (1800 + 200 + 4 + 92) * (2880 + 26 + 2 + 214) * 60 / 1000,
 	.hdisplay = 1800,
@@ -996,6 +1006,7 @@ static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
 	char buf[256];
 	u8 power_mode = 0xff, display_mode = 0xff;
 	u8 addr_mode = 0xff, pixel_format = 0xff;
+	u8 signal_mode = 0xff, display_status = 0xff;
 	u8 line = 0, first = 0, last = 0;
 	bool advancing = false;
 	int i, n;
@@ -1004,6 +1015,8 @@ static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display_mode, 1);
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &addr_mode, 1);
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_PIXEL_FORMAT, &pixel_format, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SIGNAL_MODE, &signal_mode, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_STATUS, &display_status, 1);
 
 	/*
 	 * DIAG (temporary): DCS 0x45 advances with the panel's own scan, so a
@@ -1023,8 +1036,10 @@ static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
 
 	n = snprintf(buf, sizeof(buf),
 		     "power=0x%02x display=0x%02x addr=0x%02x pixfmt=0x%02x\n"
+		     "signal=0x%02x status=0x%02x\n"
 		     "scanline samples=%d first=%u last=%u advancing=%s\n",
 		     power_mode, display_mode, addr_mode, pixel_format,
+		     signal_mode, display_status,
 		     i, first, last, advancing ? "yes" : "no");
 
 	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
@@ -1114,11 +1129,15 @@ static int nt36532_prepare(struct drm_panel *panel)
 			goto fail;
 		}
 
-		ret = mipi_dsi_compression_mode(dsi, true);
-		if (ret < 0) {
-			dev_err(dev, "failed to enable compression mode: %d\n",
-				ret);
-			goto fail;
+		if (!no_9b) {
+			ret = mipi_dsi_compression_mode(dsi, true);
+			if (ret < 0) {
+				dev_err(dev, "failed to enable compression mode: %d\n",
+					ret);
+				goto fail;
+			}
+		} else {
+			dev_info(dev, "diag: no_9b set, DCS 0x9b not sent\n");
 		}
 	} else {
 		dev_info(dev, "diag: no_dsc set, panel runs uncompressed at 60 Hz\n");

@@ -698,6 +698,19 @@ static unsigned int force_fps;
 module_param(force_fps, uint, 0644);
 MODULE_PARM_DESC(force_fps, "force a panel frame rate (60/120/144); 0 = descriptor default");
 
+/*
+ * DIAG (temporary): the vendor parses DSC per interface (h_active = 900), so the
+ * PPS it sends carries a per-link picture width.  This driver hands the panel
+ * the full bonded width (1800), from which the decoder derives four 450-px
+ * slices per line even though each link only carries two.  Boot with
+ * panel_novatek_nt36532.pps_per_link_pic_width=1 to send the per-link width,
+ * leaving the DPU's split-panel encoder configuration untouched.
+ */
+static bool pps_per_link_pic_width;
+module_param_named(pps_per_link_pic_width, pps_per_link_pic_width, bool, 0644);
+MODULE_PARM_DESC(pps_per_link_pic_width,
+	"pack the PPS with the per-link picture width instead of the bonded width");
+
 static const struct drm_display_mode pipa_mode_60 = {
 	.clock = (1800 + 200 + 4 + 92) * (2880 + 26 + 2 + 214) * 60 / 1000,
 	.hdisplay = 1800,
@@ -980,19 +993,39 @@ static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
 {
 	struct nt36532 *ctx = file->private_data;
 	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
-	char buf[96];
+	char buf[256];
 	u8 power_mode = 0xff, display_mode = 0xff;
 	u8 addr_mode = 0xff, pixel_format = 0xff;
-	int n;
+	u8 line = 0, first = 0, last = 0;
+	bool advancing = false;
+	int i, n;
 
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power_mode, 1);
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display_mode, 1);
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &addr_mode, 1);
 	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_PIXEL_FORMAT, &pixel_format, 1);
 
+	/*
+	 * DIAG (temporary): DCS 0x45 advances with the panel's own scan, so a
+	 * changing value proves the DDIC is locked to the stream we send; a
+	 * frozen value means it never locked, whatever the DSI registers say.
+	 */
+	for (i = 0; i < 8; i++) {
+		if (mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SCANLINE, &line, 1) < 0)
+			break;
+		if (i == 0)
+			first = line;
+		if (i > 0 && line != last)
+			advancing = true;
+		last = line;
+		msleep(20);
+	}
+
 	n = snprintf(buf, sizeof(buf),
-		     "power=0x%02x display=0x%02x addr=0x%02x pixfmt=0x%02x\n",
-		     power_mode, display_mode, addr_mode, pixel_format);
+		     "power=0x%02x display=0x%02x addr=0x%02x pixfmt=0x%02x\n"
+		     "scanline samples=%d first=%u last=%u advancing=%s\n",
+		     power_mode, display_mode, addr_mode, pixel_format,
+		     i, first, last, advancing ? "yes" : "no");
 
 	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
 }
@@ -1014,6 +1047,17 @@ static void nt36532_diag_poke_init(struct nt36532 *ctx)
 	debugfs_create_file("dcs", 0600, dir, ctx, &nt36532_diag_dcs_fops);
 }
 
+
+static void nt36532_pack_pps(struct nt36532 *ctx,
+			     struct drm_dsc_picture_parameter_set *pps)
+{
+	struct drm_dsc_config dsc = ctx->dsc;
+
+	if (pps_per_link_pic_width && ctx->dsi[1])
+		dsc.pic_width /= 2;
+
+	drm_dsc_pps_payload_pack(pps, &dsc);
+}
 
 static int nt36532_prepare(struct drm_panel *panel)
 {
@@ -1052,7 +1096,17 @@ static int nt36532_prepare(struct drm_panel *panel)
 	nt36532_diag_panel_state(ctx, "post-init");
 
 	if (!no_dsc) {
-		drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
+		nt36532_pack_pps(ctx, &pps);
+
+		dev_info(panel->dev,
+			 "dsc-pre: pic %ux%u slice %ux%u count %u chunk %u bpp %u bpc %u per_link=%d\n",
+			 ctx->dsc.pic_width, ctx->dsc.pic_height,
+			 ctx->dsc.slice_width, ctx->dsc.slice_height,
+			 ctx->dsc.slice_count, ctx->dsc.slice_chunk_size,
+			 ctx->dsc.bits_per_pixel, ctx->dsc.bits_per_component,
+			 pps_per_link_pic_width);
+		print_hex_dump(KERN_INFO, "PPS-pre:", DUMP_PREFIX_NONE, 16, 1,
+			       (void *)&pps, sizeof(pps), false);
 
 		ret = mipi_dsi_picture_parameter_set(dsi, &pps);
 		if (ret < 0) {
@@ -1104,7 +1158,7 @@ static int nt36532_enable(struct drm_panel *panel)
 	 * there, so both ends must agree on the mode.
 	 */
 	if (!no_dsc) {
-		drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
+		nt36532_pack_pps(ctx, &pps);
 
 		print_hex_dump(KERN_INFO, "DSC:", DUMP_PREFIX_NONE, 16,
 		       1, (void *)&pps, sizeof(pps), false);

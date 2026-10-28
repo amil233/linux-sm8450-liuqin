@@ -538,6 +538,21 @@ config DRM_PANEL_NOVATEK_NT36523
 	  around the Novatek NT36523 display controller, such as some
 	  Boe panels used in Xiaomi Mi Pad 5 and 5 Pro tablets.
 
+config DRM_PANEL_NOVATEK_NT36532
+	tristate "Novatek NT36532 panel driver (liuqin bring-up)"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for the panels built
+	  around the Novatek NT36532 display controller, such as the dual-DSI
+	  DSC panel in the Xiaomi Pad 6 Pro (liuqin).
+
+	  This is the driver NT36523 replaced.  It is kept because it still
+	  boots and provides a shell on liuqin while the NT36523 bring-up is
+	  unfinished.  Both drivers match the same panel node, so only one of
+	  them may be built in at a time.
+
 
 config DRM_PANEL_NOVATEK_NT36672A
 	tristate "Novatek NT36672A DSI panel"

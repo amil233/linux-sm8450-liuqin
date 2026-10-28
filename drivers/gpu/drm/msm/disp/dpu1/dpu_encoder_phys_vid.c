@@ -234,12 +234,12 @@ static void programmable_fetch_config(struct dpu_encoder_phys *phys_enc,
 		return;
 
 	vfp_fetch_lines = programmable_fetch_get_num_lines(phys_enc, timing);
-	f.enable = 1;
 	if (vfp_fetch_lines) {
 		vert_total = get_vertical_total(timing);
 		horiz_total = get_horizontal_total(timing);
 		vfp_fetch_start_vsync_counter =
 		    (vert_total - vfp_fetch_lines) * horiz_total + 1;
+		f.enable = 1;
 		f.fetch_start = vfp_fetch_start_vsync_counter;
 	}
 

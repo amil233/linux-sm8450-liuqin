@@ -689,6 +689,15 @@ static bool no_dsc;
 module_param(no_dsc, bool, 0644);
 MODULE_PARM_DESC(no_dsc, "run the panel uncompressed at 60 Hz (diagnostic)");
 
+/*
+ * DIAG (temporary): the vendor runs this panel from 30 to 144 fps at a fixed
+ * 1,007,032,320 Hz link clock, stretching the porches; 60 fps is the 120 fps
+ * porch set with VFP doubled.  0 keeps the descriptor's own mode.
+ */
+static unsigned int force_fps;
+module_param(force_fps, uint, 0644);
+MODULE_PARM_DESC(force_fps, "force a panel frame rate (60/120/144); 0 = descriptor default");
+
 static const struct drm_display_mode pipa_mode_60 = {
 	.clock = (1800 + 200 + 4 + 92) * (2880 + 26 + 2 + 214) * 60 / 1000,
 	.hdisplay = 1800,
@@ -714,6 +723,30 @@ static const struct drm_display_mode pipa_mode_120 = {
 	.vsync_start = 2880 + 26,
 	.vsync_end = 2880 + 26 + 2,
 	.vtotal = 2880 + 26 + 2 + 214,
+	.width_mm = 148,
+	.height_mm = 237,
+	.type = DRM_MODE_TYPE_DRIVER,
+};
+
+
+/*
+ * Vendor 60 Hz timing, read back from the stock kernel while it was scanning
+ * this panel at 60 fps:
+ *   dump_info: 900(46|100|2)x2880(214|3148|2)@60fps 1007032320 Hz
+ *   dsi0 TOTAL = 0x186301bf, clocks unchanged (pclk 167838720, byteclk 125879040)
+ * So it is the 120 Hz porch set with VFP doubled: htotal stays 2096, vtotal
+ * goes 3122 -> 6244, and the derived mode clock is the same 785245 kHz.
+ */
+static const struct drm_display_mode pipa_mode_60_dsc = {
+	.clock = (1800 + 200 + 4 + 92) * (2880 + 3148 + 2 + 214) * 60 / 1000,
+	.hdisplay = 1800,
+	.hsync_start = 1800 + 200,
+	.hsync_end = 1800 + 200 + 4,
+	.htotal = 1800 + 200 + 4 + 92,
+	.vdisplay = 2880,
+	.vsync_start = 2880 + 3148,
+	.vsync_end = 2880 + 3148 + 2,
+	.vtotal = 2880 + 3148 + 2 + 214,
 	.width_mm = 148,
 	.height_mm = 237,
 	.type = DRM_MODE_TYPE_DRIVER,
@@ -807,7 +840,7 @@ static const struct panel_desc pipa_tm_desc = {
 	.format = MIPI_DSI_FMT_RGB888,
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 		MIPI_DSI_CLOCK_NON_CONTINUOUS,
-	.drm_mode = pipa_mode_144,
+	.drm_mode = pipa_mode_60_dsc,
 	.init_sequence = m81_36_02_0a_init_sequence,
 	.reset_sequence = pipa_tm_reset
 };
@@ -1123,7 +1156,23 @@ static int nt36532_get_modes(struct drm_panel *panel,
 	struct nt36532 *ctx = to_nt36532(panel);
 	const struct drm_display_mode *mode;
 
-	mode = no_dsc ? &pipa_mode_60 : &(ctx->desc->drm_mode);
+	switch (force_fps) {
+	case 60:
+		mode = &pipa_mode_60_dsc;
+		break;
+	case 120:
+		mode = &pipa_mode_120;
+		break;
+	case 144:
+		mode = &pipa_mode_144;
+		break;
+	default:
+		mode = &ctx->desc->drm_mode;
+		break;
+	}
+
+	if (no_dsc)
+		mode = &pipa_mode_60;
 	return drm_connector_helper_get_modes_fixed(connector, mode);
 }
 
@@ -1177,6 +1226,14 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 	if (ctx->desc == &pipa_desc && saved_command_line &&
 	    strstr(saved_command_line, "mdss_dsi_m81_36_02_0a"))
 		ctx->desc = &pipa_tm_desc;
+
+	dev_info(dev,
+		 "panel desc: %s, htotal=%u vtotal=%u clock=%u kHz, force_fps=%u, cmdline_match=%d\n",
+		 ctx->desc == &pipa_tm_desc ? "tianma" : "csot",
+		 ctx->desc->drm_mode.htotal, ctx->desc->drm_mode.vtotal,
+		 ctx->desc->drm_mode.clock, force_fps,
+		 saved_command_line &&
+		 strstr(saved_command_line, "mdss_dsi_m81_36_02_0a") ? 1 : 0);
 
 	dsi_sec = of_graph_get_remote_node(dsi->dev.of_node, 1, -1);
 

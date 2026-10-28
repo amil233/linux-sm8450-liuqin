@@ -712,6 +712,17 @@ MODULE_PARM_DESC(pps_per_link_pic_width,
 	"pack the PPS with the per-link picture width instead of the bonded width");
 
 /*
+ * DIAG (temporary): skill experience lists "a DSC video-mode panel fed with a
+ * non-continuous clock loses lock" among the causes of an all-black screen
+ * with every register looking right.  The descriptor asks for
+ * MIPI_DSI_CLOCK_NON_CONTINUOUS, so boot with ...cont_clock=1 to keep the HS
+ * clock running through BLLP instead and see whether the panel locks.
+ */
+static bool cont_clock;
+module_param_named(cont_clock, cont_clock, bool, 0644);
+MODULE_PARM_DESC(cont_clock, "keep the DSI clock lane in HS during BLLP");
+
+/*
  * DIAG (temporary): the stock on-command set never contains DCS 0x9b, while
  * this driver enables compression mode through it.  On some DDICs 0x9b
  * switches the receiver into a mode that conflicts with video-mode DSC and
@@ -1360,9 +1371,14 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 			ctx->dsi[i]->dsc_slice_per_pkt = 2;
 		}
 
+		if (i == 0)
+			dev_info(dev, "diag: cont_clock=%d (mode_flags=0x%lx)\n",
+				 cont_clock, ctx->desc->mode_flags);
 		ctx->dsi[i]->lanes = 4;
 		ctx->dsi[i]->format = MIPI_DSI_FMT_RGB888;
 		ctx->dsi[i]->mode_flags = ctx->desc->mode_flags;
+		if (cont_clock)
+			ctx->dsi[i]->mode_flags &= ~MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 		ret = devm_mipi_dsi_attach(dev, ctx->dsi[i]);
 

@@ -10,6 +10,7 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/syscon.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/of_irq.h>
@@ -28,6 +29,17 @@
 #include "dsi.h"
 #include "dsi.xml.h"
 #include "sfpb.xml.h"
+
+/*
+ * DIAG (temporary, black-panel hunt) - see dsi_ctrl_enable().  The vendor value
+ * puts BROADCAST_EN and MASTER on every link it programs; that only makes sense
+ * when the hardware does the relaying.  Default off so each bonded link sends
+ * its own copy, which is what msm_dsi_manager_cmd_xfer() assumes.
+ */
+static bool dsi_cmd_broadcast;
+module_param_named(dsi_cmd_broadcast, dsi_cmd_broadcast, bool, 0644);
+MODULE_PARM_DESC(dsi_cmd_broadcast,
+	"program BROADCAST_EN|MASTER on every DSI link (vendor value 0xd4000000)");
 #include "dsi_cfg.h"
 #include "msm_dsc_helper.h"
 #include "msm_kms.h"
@@ -867,8 +879,20 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		}
 	}
 
-	/* Vendor liuqin value; the upstream pair leaves bits 31/30 clear. */
-	dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, 0xd4000000);
+	/*
+	 * DIAG (temporary): the vendor sets BROADCAST_EN|MASTER (0xd4000000) on
+	 * the master link and lets the hardware relay each command to the slave.
+	 * This driver instead stages the same command in both controllers and
+	 * triggers both, so keeping broadcast enabled would put two copies of
+	 * every DCS command on the wire.  Default to the upstream value; boot
+	 * with msm.dsi_cmd_broadcast=1 to reproduce the previous behaviour.
+	 */
+	if (dsi_cmd_broadcast)
+		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, 0xd4000000);
+	else
+		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL,
+			  DSI_CMD_DMA_CTRL_FROM_FRAME_BUFFER |
+			  DSI_CMD_DMA_CTRL_LOW_POWER);
 
 	data = 0;
 	/* Always assume dedicated TE pin */

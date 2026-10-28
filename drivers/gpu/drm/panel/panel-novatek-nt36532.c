@@ -535,6 +535,12 @@ static int m81_36_02_0a_init_sequence(struct nt36532 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x91, 0x89, 0x28, 0x00, 0x14, 0xd2, 0x00, 0x01, 0xf4,
 			       0x01, 0xab, 0x00, 0x06, 0x05, 0x7a, 0x06, 0x1a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x92, 0x10, 0xf0);
+	if (pps_in_init) {
+		struct drm_dsc_picture_parameter_set pps;
+
+		nt36532_pack_pps(ctx, &pps);
+		mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
+	}
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x9d, 0x01);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3b, 0x03, 0xd8, 0x1a, 0x0a, 0x0a, 0x00);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x51, 0x0f, 0xff);
@@ -721,6 +727,23 @@ MODULE_PARM_DESC(pps_per_link_pic_width,
 static bool cont_clock;
 module_param_named(cont_clock, cont_clock, bool, 0644);
 MODULE_PARM_DESC(cont_clock, "keep the DSI clock lane in HS during BLLP");
+
+/*
+ * DIAG (temporary): the upstream panel-novatek-nt36532 driver (OnePlus Pad 2,
+ * also an NT36532 dual-DSC panel) sends the PPS inside its init sequence,
+ * between "enable DSC" (0x90 0x03) and sleep-out/display-on, and never sends
+ * DCS 0x9b.  This driver instead finishes the whole init (including display
+ * on) and only then sends the PPS, so the decoder starts scanning a
+ * compressed stream it has no parameters for.  Boot with ...pps_in_init=1
+ * to send the PPS where the upstream driver does; combine with no_9b=1 for
+ * the exact upstream ordering.
+ */
+static bool pps_in_init;
+module_param_named(pps_in_init, pps_in_init, bool, 0644);
+MODULE_PARM_DESC(pps_in_init, "send the PPS inside the init sequence, before display on");
+
+static void nt36532_pack_pps(struct nt36532 *ctx,
+			     struct drm_dsc_picture_parameter_set *pps);
 
 /*
  * DIAG (temporary): the stock on-command set never contains DCS 0x9b, while
@@ -1121,7 +1144,7 @@ static int nt36532_prepare(struct drm_panel *panel)
 
 	nt36532_diag_panel_state(ctx, "post-init");
 
-	if (!no_dsc) {
+	if (!no_dsc && !pps_in_init) {
 		nt36532_pack_pps(ctx, &pps);
 
 		dev_info(panel->dev,

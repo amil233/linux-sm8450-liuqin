@@ -64,6 +64,24 @@ static bool skip_panel_init;
 module_param(skip_panel_init, bool, 0644);
 MODULE_PARM_DESC(skip_panel_init, "skip panel reset and init sequence (diagnostic)");
 
+/*
+ * DIAG (temporary): the upstream panel-novatek-nt36532 driver (OnePlus Pad 2,
+ * also an NT36532 dual-DSC panel) sends the PPS inside its init sequence,
+ * between "enable DSC" (0x90 0x03) and sleep-out/display-on, and never sends
+ * DCS 0x9b.  This driver instead finishes the whole init (including display
+ * on) and only then sends the PPS, so the decoder starts scanning a
+ * compressed stream it has no parameters for.  Boot with ...pps_in_init=1
+ * to send the PPS where the upstream driver does; combine with no_9b=1 for
+ * the exact upstream ordering.
+ */
+static bool pps_in_init;
+module_param_named(pps_in_init, pps_in_init, bool, 0644);
+MODULE_PARM_DESC(pps_in_init, "send the PPS inside the init sequence, before display on");
+
+static void nt36532_pack_pps(struct nt36532 *ctx,
+			     struct drm_dsc_picture_parameter_set *pps);
+
+
 static struct mipi_dsi_device *nt36532_cmd_dsi(struct nt36532 *ctx)
 {
 	return ctx->dsi[1] ?: ctx->dsi[0];
@@ -727,23 +745,6 @@ MODULE_PARM_DESC(pps_per_link_pic_width,
 static bool cont_clock;
 module_param_named(cont_clock, cont_clock, bool, 0644);
 MODULE_PARM_DESC(cont_clock, "keep the DSI clock lane in HS during BLLP");
-
-/*
- * DIAG (temporary): the upstream panel-novatek-nt36532 driver (OnePlus Pad 2,
- * also an NT36532 dual-DSC panel) sends the PPS inside its init sequence,
- * between "enable DSC" (0x90 0x03) and sleep-out/display-on, and never sends
- * DCS 0x9b.  This driver instead finishes the whole init (including display
- * on) and only then sends the PPS, so the decoder starts scanning a
- * compressed stream it has no parameters for.  Boot with ...pps_in_init=1
- * to send the PPS where the upstream driver does; combine with no_9b=1 for
- * the exact upstream ordering.
- */
-static bool pps_in_init;
-module_param_named(pps_in_init, pps_in_init, bool, 0644);
-MODULE_PARM_DESC(pps_in_init, "send the PPS inside the init sequence, before display on");
-
-static void nt36532_pack_pps(struct nt36532 *ctx,
-			     struct drm_dsc_picture_parameter_set *pps);
 
 /*
  * DIAG (temporary): the stock on-command set never contains DCS 0x9b, while

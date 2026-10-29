@@ -2,6 +2,7 @@
 // Copyright (c) 2024 Luka Panio <lukapanio@gmail.com>
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
@@ -20,6 +21,33 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/display/drm_dsc.h>
 #include <drm/display/drm_dsc_helper.h>
+
+/*
+ * DIAG (temporary, 6.17 bring-up): the Tianma and CSOT modules need different
+ * init sequences and are not interchangeable.  Selecting one by a bootloader
+ * command-line substring is invisible at runtime, so allow pinning the module
+ * explicitly and always print which one was chosen.
+ */
+static char *desc_sel;
+module_param(desc_sel, charp, 0644);
+MODULE_PARM_DESC(desc_sel, "force the panel module: auto, tianma or csot");
+
+/*
+ * DIAG (temporary, 6.17 bring-up): the vendor runs this panel at 60/120/144 fps
+ * on a fixed link clock.  The descriptor defaults to the DT timing (120 fps).
+ */
+static unsigned int force_fps;
+module_param(force_fps, uint, 0644);
+MODULE_PARM_DESC(force_fps, "force a frame rate (60/120); 0 = descriptor default");
+
+/*
+ * DIAG (temporary, 6.17 bring-up): the vendor DT asks for burst mode, while the
+ * pipa driver this file grew from runs non-burst.  Both are one module
+ * parameter away, so a single build can test either.
+ */
+static bool burst = true;
+module_param(burst, bool, 0644);
+MODULE_PARM_DESC(burst, "use burst mode on the Tianma module (default on, like the vendor DT)");
 
 struct nt36532 {
 	struct drm_panel panel;
@@ -62,6 +90,23 @@ static void pipa_reset(struct nt36532 *ctx)
 	usleep_range(12000, 13000);
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 	usleep_range(12000, 13000);
+}
+
+/*
+ * Tianma module reset, straight from the vendor DTBO:
+ *   qcom,mdss-dsi-reset-sequence = <0 10 1 3 0 3 1 15>;
+ * The pipa default above (12/12/12/12) is the CSOT module's waveform.
+ */
+static void pipa_tm_reset(struct nt36532 *ctx)
+{
+	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	usleep_range(10000, 11000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(3000, 4000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	usleep_range(3000, 4000);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(15000, 16000);
 }
 
 static void yudi_reset(struct nt36532 *ctx)
@@ -433,6 +478,29 @@ static const struct drm_display_mode pipa_mode_120 = {
 	.type = DRM_MODE_TYPE_DRIVER,
 };
 
+/*
+ * Vendor 60 Hz timing, read back from the stock kernel while it was scanning
+ * this panel at 60 fps:
+ *   dump_info: 900(46|100|2)x2880(214|3148|2)@60fps 1007032320 Hz
+ *   dsi0 TOTAL = 0x186301bf, clocks unchanged (pclk 167838720, byteclk 125879040)
+ * So it is the 120 Hz porch set with VFP doubled: htotal stays 2096, vtotal
+ * goes 3122 -> 6244, and the derived mode clock is the same 785245 kHz.
+ */
+static const struct drm_display_mode pipa_mode_60_dsc = {
+	.clock = (1800 + 200 + 4 + 92) * (2880 + 3148 + 2 + 214) * 60 / 1000,
+	.hdisplay = 1800,
+	.hsync_start = 1800 + 200,
+	.hsync_end = 1800 + 200 + 4,
+	.htotal = 1800 + 200 + 4 + 92,
+	.vdisplay = 2880,
+	.vsync_start = 2880 + 3148,
+	.vsync_end = 2880 + 3148 + 2,
+	.vtotal = 2880 + 3148 + 2 + 214,
+	.width_mm = 148,
+	.height_mm = 237,
+	.type = DRM_MODE_TYPE_DRIVER,
+};
+
 static const struct drm_display_mode yudi_mode_120 = {
 	.clock = 2 * (1440 + 65 + 10 + 38) * (1800 + 26 + 2 + 118) * 120 / 1000,
 	.hdisplay = 2 * (1440),
@@ -722,7 +790,7 @@ static const struct panel_desc pipa_tm_desc = {
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
 	.drm_mode = pipa_mode_120,
 	.init_sequence = m81_36_02_0a_init_sequence,
-	.reset_sequence = pipa_reset
+	.reset_sequence = pipa_tm_reset
 };
 
 static const struct panel_desc yudi_desc = {
@@ -774,6 +842,139 @@ static int nt36532_off(struct nt36532 *ctx)
 	return 0;
 }
 
+/*
+ * DIAG (temporary, 6.17 bring-up): the DDIC answers DCS reads even when it
+ * shows nothing, so print the interesting ones at init/enable time and expose
+ * the same reads plus an arbitrary poke through debugfs:
+ *
+ *	cat /sys/kernel/debug/nt36532/dcs
+ *	echo "0xff 0x10 0x38" > /sys/kernel/debug/nt36532/dcs
+ *
+ * Remove all of this once the panel lights.
+ */
+static void nt36532_diag_state(struct nt36532 *ctx, const char *when)
+{
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	u8 power = 0xff, display = 0xff, signal = 0xff;
+
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SIGNAL_MODE, &signal, 1);
+
+	dev_info(&dsi->dev,
+		 "diag[%s]: power=0x%02x display=0x%02x signal=0x%02x\n",
+		 when, power, display, signal);
+}
+
+static ssize_t nt36532_diag_dcs_read(struct file *file, char __user *ubuf,
+				     size_t len, loff_t *ppos)
+{
+	struct nt36532 *ctx = file->private_data;
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	char buf[256];
+	u8 power = 0xff, display = 0xff, addr = 0xff, pixfmt = 0xff;
+	u8 signal = 0xff, status = 0xff;
+	u8 line = 0, first = 0, last = 0;
+	bool advancing = false;
+	int i, n;
+
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_MODE, &display, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &addr, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_PIXEL_FORMAT, &pixfmt, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SIGNAL_MODE, &signal, 1);
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_STATUS, &status, 1);
+
+	/*
+	 * DCS 0x45 advances with the panel's own scan, so a changing value
+	 * proves the DDIC is locked to the stream we send; a frozen value
+	 * means it never locked, whatever the DSI registers say.
+	 */
+	for (i = 0; i < 8; i++) {
+		if (mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_SCANLINE, &line, 1) < 0)
+			break;
+		if (i == 0)
+			first = line;
+		if (i > 0 && line != last)
+			advancing = true;
+		last = line;
+		msleep(20);
+	}
+
+	n = snprintf(buf, sizeof(buf),
+		     "power=0x%02x display=0x%02x addr=0x%02x pixfmt=0x%02x\n"
+		     "signal=0x%02x status=0x%02x\n"
+		     "scanline samples=%d first=%u last=%u advancing=%s\n",
+		     power, display, addr, pixfmt, signal, status,
+		     i, first, last, advancing ? "yes" : "no");
+
+	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
+}
+
+static ssize_t nt36532_diag_dcs_write(struct file *file,
+				      const char __user *ubuf,
+				      size_t len, loff_t *ppos)
+{
+	struct nt36532 *ctx = file->private_data;
+	struct mipi_dsi_device *dsi = nt36532_cmd_dsi(ctx);
+	u8 cmd[64];
+	size_t n = 0;
+	char *str, *cur, *tok;
+	ssize_t ret;
+	u8 power = 0xff;
+
+	if (len == 0 || len > 200)
+		return -EINVAL;
+
+	str = memdup_user_nul(ubuf, len);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
+
+	cur = str;
+	while ((tok = strsep(&cur, " \t\n")) != NULL) {
+		u8 byte;
+
+		if (!*tok)
+			continue;
+		if (kstrtou8(tok, 0, &byte) || n >= ARRAY_SIZE(cmd)) {
+			kfree(str);
+			return -EINVAL;
+		}
+		cmd[n++] = byte;
+	}
+	kfree(str);
+
+	if (n < 1)
+		return -EINVAL;
+
+	ret = mipi_dsi_dcs_write(dsi, cmd[0], cmd + 1, n - 1);
+	msleep(60);
+
+	mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_POWER_MODE, &power, 1);
+	dev_info(&dsi->dev,
+		 "poke: cmd=0x%02x len=%zu write_ret=%zd power=0x%02x\n",
+		 cmd[0], n - 1, ret, power);
+
+	return len;
+}
+
+static const struct file_operations nt36532_diag_dcs_fops = {
+	.open = simple_open,
+	.write = nt36532_diag_dcs_write,
+	.read = nt36532_diag_dcs_read,
+};
+
+static void nt36532_diag_init(struct nt36532 *ctx)
+{
+	struct dentry *dir;
+
+	dir = debugfs_create_dir("nt36532", NULL);
+	if (IS_ERR_OR_NULL(dir))
+		return;
+
+	debugfs_create_file("dcs", 0600, dir, ctx, &nt36532_diag_dcs_fops);
+}
+
 static int nt36532_prepare(struct drm_panel *panel)
 {
 	struct nt36532 *ctx = to_nt36532(panel);
@@ -803,6 +1004,15 @@ static int nt36532_prepare(struct drm_panel *panel)
 		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
 		goto fail;
 	}
+
+	nt36532_diag_state(ctx, "post-init");
+
+	dev_info(dev,
+		 "dsc: pic %ux%u slice %ux%u count %u chunk %u bpp %u bpc %u\n",
+		 ctx->dsc.pic_width, ctx->dsc.pic_height,
+		 ctx->dsc.slice_width, ctx->dsc.slice_height,
+		 ctx->dsc.slice_count, ctx->dsc.slice_chunk_size,
+		 ctx->dsc.bits_per_pixel, ctx->dsc.bits_per_component);
 
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
@@ -856,6 +1066,7 @@ static int nt36532_enable(struct drm_panel *panel)
 	}
 
 	msleep(28);
+	nt36532_diag_state(ctx, "enabled");
 
 	return ret;
 }
@@ -892,7 +1103,19 @@ static int nt36532_get_modes(struct drm_panel *panel,
 {
 	struct nt36532 *ctx = to_nt36532(panel);
 	const struct drm_display_mode *mode;
-	mode = &(ctx->desc->drm_mode);
+
+	switch (force_fps) {
+	case 60:
+		mode = &pipa_mode_60_dsc;
+		break;
+	case 120:
+		mode = &pipa_mode_120;
+		break;
+	default:
+		mode = &ctx->desc->drm_mode;
+		break;
+	}
+
 	return drm_connector_helper_get_modes_fixed(connector, mode);
 }
 
@@ -935,12 +1158,22 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 
 	/*
 	 * liuqin is fitted with one of two NT36532 modules and their init
-	 * sequences are not interchangeable.  The bootloader names the fitted
-	 * module on the kernel command line, so select the matching one.
+	 * sequences are not interchangeable.  Pick by desc_sel when given,
+	 * otherwise keep the bootloader command-line heuristic.
 	 */
-	if (ctx->desc == &pipa_desc && saved_command_line &&
-	    strstr(saved_command_line, "mdss_dsi_m81_36_02_0a"))
+	if (desc_sel && !strcmp(desc_sel, "tianma"))
 		ctx->desc = &pipa_tm_desc;
+	else if (desc_sel && !strcmp(desc_sel, "csot"))
+		ctx->desc = &pipa_desc;
+	else if (ctx->desc == &pipa_desc && saved_command_line &&
+		 strstr(saved_command_line, "mdss_dsi_m81_36_02_0a"))
+		ctx->desc = &pipa_tm_desc;
+
+	dev_info(dev, "panel desc: %s (desc_sel=%s cmdline_match=%d)\n",
+		 ctx->desc == &pipa_tm_desc ? "tianma" : "csot",
+		 desc_sel ?: "auto",
+		 saved_command_line &&
+		 strstr(saved_command_line, "mdss_dsi_m81_36_02_0a") ? 1 : 0);
 
 	dsi_sec = of_graph_get_remote_node(dsi->dev.of_node, 1, -1);
 
@@ -995,6 +1228,8 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 		ctx->dsi[i]->lanes = 4;
 		ctx->dsi[i]->format = MIPI_DSI_FMT_RGB888;
 		ctx->dsi[i]->mode_flags = ctx->desc->mode_flags;
+		if (burst && ctx->desc == &pipa_tm_desc)
+			ctx->dsi[i]->mode_flags |= MIPI_DSI_MODE_VIDEO_BURST;
 
 		ret = devm_mipi_dsi_attach(dev, ctx->dsi[i]);
 
@@ -1004,6 +1239,8 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 					     "Failed to attach to DSI%d\n", i);
 		}
 	}
+
+	nt36532_diag_init(ctx);
 
 	return 0;
 }

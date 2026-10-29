@@ -4,13 +4,11 @@
  */
 
 #include <linux/clk.h>
-#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/syscon.h>
-#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/of_irq.h>
@@ -18,7 +16,6 @@
 #include <linux/pm_opp.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-#include <linux/seq_file.h>
 #include <linux/spinlock.h>
 
 #include <video/mipi_display.h>
@@ -29,17 +26,6 @@
 #include "dsi.h"
 #include "dsi.xml.h"
 #include "sfpb.xml.h"
-
-/*
- * DIAG (temporary, black-panel hunt) - see dsi_ctrl_enable().  The vendor value
- * puts BROADCAST_EN and MASTER on every link it programs; that only makes sense
- * when the hardware does the relaying.  Default off so each bonded link sends
- * its own copy, which is what msm_dsi_manager_cmd_xfer() assumes.
- */
-static bool dsi_cmd_broadcast;
-module_param_named(dsi_cmd_broadcast, dsi_cmd_broadcast, bool, 0644);
-MODULE_PARM_DESC(dsi_cmd_broadcast,
-	"program BROADCAST_EN|MASTER on every DSI link (vendor value 0xd4000000)");
 #include "dsi_cfg.h"
 #include "msm_dsc_helper.h"
 #include "msm_kms.h"
@@ -143,7 +129,7 @@ struct msm_dsi_host {
 	struct clk *dsi_pll_pixel_clk;
 
 	unsigned long byte_clk_rate;
-	bool byte_intf_clk_div_2;
+	unsigned long byte_intf_clk_rate;
 	unsigned long pixel_clk_rate;
 	unsigned long esc_clk_rate;
 
@@ -396,19 +382,7 @@ int msm_dsi_runtime_resume(struct device *dev)
 
 int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
 {
-	unsigned long byte_intf_clk_rate;
-	long rounded_byte_clk_rate;
 	int ret;
-
-	rounded_byte_clk_rate = clk_round_rate(msm_host->byte_clk,
-					       msm_host->byte_clk_rate);
-	if (rounded_byte_clk_rate < 0) {
-		pr_err("%s: failed to round byte clock rate, %ld\n",
-		       __func__, rounded_byte_clk_rate);
-		return rounded_byte_clk_rate;
-	}
-
-	msm_host->byte_clk_rate = rounded_byte_clk_rate;
 
 	DBG("Set clk rates: pclk=%lu, byteclk=%lu",
 	    msm_host->pixel_clk_rate, msm_host->byte_clk_rate);
@@ -427,11 +401,7 @@ int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
 	}
 
 	if (msm_host->byte_intf_clk) {
-		byte_intf_clk_rate = msm_host->byte_clk_rate;
-		if (msm_host->byte_intf_clk_div_2)
-			byte_intf_clk_rate /= 2;
-
-		ret = clk_set_rate(msm_host->byte_intf_clk, byte_intf_clk_rate);
+		ret = clk_set_rate(msm_host->byte_intf_clk, msm_host->byte_intf_clk_rate);
 		if (ret) {
 			pr_err("%s: Failed to set rate byte intf clk, %d\n",
 			       __func__, ret);
@@ -580,6 +550,8 @@ error:
 
 void dsi_link_clk_disable_6g(struct msm_dsi_host *msm_host)
 {
+	/* Drop the performance state vote */
+	dev_pm_opp_set_rate(&msm_host->pdev->dev, 0);
 	clk_disable_unprepare(msm_host->esc_clk);
 	clk_disable_unprepare(msm_host->pixel_clk);
 	clk_disable_unprepare(msm_host->byte_intf_clk);
@@ -598,7 +570,6 @@ void dsi_link_clk_disable_v2(struct msm_dsi_host *msm_host)
  * dsi_adjust_pclk_for_compression() - Adjust the pclk rate for compression case
  * @mode: The selected mode for the DSI output
  * @dsc: DRM DSC configuration for this DSI output
- * @is_bonded_dsi: True if two DSI controllers are bonded
  *
  * Adjust the pclk rate by calculating a new hdisplay proportional to
  * the compression ratio such that:
@@ -614,30 +585,13 @@ void dsi_link_clk_disable_v2(struct msm_dsi_host *msm_host)
  *  FIXME: Reconsider this if/when CMD mode handling is rewritten to use
  *  transfer time and data overhead as a starting point of the calculations.
  */
-static unsigned long
-dsi_adjust_pclk_for_compression(const struct drm_display_mode *mode,
-				const struct drm_dsc_config *dsc,
-				bool is_bonded_dsi)
+static unsigned long dsi_adjust_pclk_for_compression(const struct drm_display_mode *mode,
+		const struct drm_dsc_config *dsc)
 {
-	int hdisplay, new_hdisplay, new_htotal;
+	int new_hdisplay = DIV_ROUND_UP(mode->hdisplay * drm_dsc_get_bpp_int(dsc),
+			dsc->bits_per_component * 3);
 
-	/*
-	 * For bonded DSI, split hdisplay across two links and round up each
-	 * half separately, passing the full hdisplay would only round up once.
-	 * This also aligns with the hdisplay we program later in
-	 * dsi_timing_setup()
-	 */
-	hdisplay = mode->hdisplay;
-	if (is_bonded_dsi)
-		hdisplay /= 2;
-
-	new_hdisplay = DIV_ROUND_UP(hdisplay * drm_dsc_get_bpp_int(dsc),
-				    dsc->bits_per_component * 3);
-
-	if (is_bonded_dsi)
-		new_hdisplay *= 2;
-
-	new_htotal = mode->htotal - mode->hdisplay + new_hdisplay;
+	int new_htotal = mode->htotal - mode->hdisplay + new_hdisplay;
 
 	return mult_frac(mode->clock * 1000u, new_htotal, mode->htotal);
 }
@@ -650,7 +604,7 @@ static unsigned long dsi_get_pclk_rate(const struct drm_display_mode *mode,
 	pclk_rate = mode->clock * 1000u;
 
 	if (dsc)
-		pclk_rate = dsi_adjust_pclk_for_compression(mode, dsc, is_bonded_dsi);
+		pclk_rate = dsi_adjust_pclk_for_compression(mode, dsc);
 
 	/*
 	 * For bonded DSI mode, the current DRM mode has the complete width of the
@@ -879,20 +833,9 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		}
 	}
 
-	/*
-	 * DIAG (temporary): the vendor sets BROADCAST_EN|MASTER (0xd4000000) on
-	 * the master link and lets the hardware relay each command to the slave.
-	 * This driver instead stages the same command in both controllers and
-	 * triggers both, so keeping broadcast enabled would put two copies of
-	 * every DCS command on the wire.  Default to the upstream value; boot
-	 * with msm.dsi_cmd_broadcast=1 to reproduce the previous behaviour.
-	 */
-	if (dsi_cmd_broadcast)
-		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, 0xd4000000);
-	else
-		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL,
-			  DSI_CMD_DMA_CTRL_FROM_FRAME_BUFFER |
-			  DSI_CMD_DMA_CTRL_LOW_POWER);
+	dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL,
+			DSI_CMD_DMA_CTRL_FROM_FRAME_BUFFER |
+			DSI_CMD_DMA_CTRL_LOW_POWER);
 
 	data = 0;
 	/* Always assume dedicated TE pin */
@@ -905,15 +848,8 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		data |= DSI_TRIG_CTRL_BLOCK_DMA_WITHIN_FRAME;
 	dsi_write(msm_host, REG_DSI_TRIG_CTRL, data);
 
-	/*
-	 * The vendor 144 Hz mode needs the full T_CLK_POST/PRE/ZERO/PREPARE
-	 * value; the 120 Hz CSOT path keeps the upstream two-field value.
-	 */
-	if (msm_host->mode && msm_host->mode->clock == 1937416)
-		data = 0x13e0391f;
-	else
-		data = DSI_CLKOUT_TIMING_CTRL_T_CLK_POST(phy_shared_timings->clk_post) |
-			DSI_CLKOUT_TIMING_CTRL_T_CLK_PRE(phy_shared_timings->clk_pre);
+	data = DSI_CLKOUT_TIMING_CTRL_T_CLK_POST(phy_shared_timings->clk_post) |
+		DSI_CLKOUT_TIMING_CTRL_T_CLK_PRE(phy_shared_timings->clk_pre);
 	dsi_write(msm_host, REG_DSI_CLKOUT_TIMING_CTRL, data);
 
 	if ((cfg_hnd->major == MSM_DSI_VER_MAJOR_6G) &&
@@ -1065,7 +1001,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 	if (msm_host->dsc) {
 		struct drm_dsc_config *dsc = msm_host->dsc;
-		u32 bits_per_pclk;
+		u32 bytes_per_pclk;
 
 		/* update dsc params with timing params */
 		if (!dsc || !mode->hdisplay || !mode->vdisplay) {
@@ -1087,10 +1023,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 		/*
 		 * DPU sends 3 bytes per pclk cycle to DSI. If widebus is
-		 * enabled, MDP always sends out 48-bit compressed data per
-		 * pclk and on average, for video mode, DSI consumes only an
-		 * amount of compressed data equivalent to the uncompressed
-		 * pixel depth per pclk.
+		 * enabled, bus width is extended to 6 bytes.
 		 *
 		 * Calculate the number of pclks needed to transmit one line of
 		 * the compressed data.
@@ -1102,16 +1035,12 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 		 * unused anyway.
 		 */
 		h_total -= hdisplay;
-		if (wide_bus_enabled) {
-			if (msm_host->mode_flags & MIPI_DSI_MODE_VIDEO)
-				bits_per_pclk = dsc->bits_per_component * 3;
-			else
-				bits_per_pclk = 48;
-		} else {
-			bits_per_pclk = 24;
-		}
+		if (wide_bus_enabled && !(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO))
+			bytes_per_pclk = 6;
+		else
+			bytes_per_pclk = 3;
 
-		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_line(msm_host->dsc) * 8, bits_per_pclk);
+		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_line(msm_host->dsc), bytes_per_pclk);
 
 		h_total += hdisplay;
 		ha_end = ha_start + hdisplay;
@@ -1193,40 +1122,6 @@ static void dsi_sw_reset(struct msm_dsi_host *msm_host)
 	}
 }
 
-/*
- * DIAG (temporary, black-panel hunt): dump the DSI controller registers that
- * the vendor kernel leaves behind on this very tablet while its panel works.
- * The vendor's sde_dbg exposes the same addresses (dsi0_ctrl_reg), so the two
- * dumps are directly comparable register for register.  Remove once the panel
- * lights.
- */
-static void dsi_diag_dump_regs(struct msm_dsi_host *msm_host)
-{
-	struct device *dev = &msm_host->pdev->dev;
-
-	dev_info(dev,
-		 "DIAG dsi%d: CTRL=%08x STATUS0=%08x FIFO=%08x VID_CFG0=%08x\n",
-		 msm_host->id,
-		 dsi_read(msm_host, REG_DSI_CTRL),
-		 dsi_read(msm_host, REG_DSI_STATUS0),
-		 dsi_read(msm_host, REG_DSI_FIFO_STATUS),
-		 dsi_read(msm_host, REG_DSI_VID_CFG0));
-	dev_info(dev,
-		 "DIAG dsi%d: ACTIVE_H=%08x ACTIVE_V=%08x TOTAL=%08x HSYNC=%08x\n",
-		 msm_host->id,
-		 dsi_read(msm_host, REG_DSI_ACTIVE_H),
-		 dsi_read(msm_host, REG_DSI_ACTIVE_V),
-		 dsi_read(msm_host, REG_DSI_TOTAL),
-		 dsi_read(msm_host, REG_DSI_ACTIVE_HSYNC));
-	dev_info(dev,
-		 "DIAG dsi%d: CMD_DMA_CTRL=%08x DSC_CTRL=%08x LANE_STATUS=%08x CLKOUT=%08x\n",
-		 msm_host->id,
-		 dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL),
-		 dsi_read(msm_host, REG_DSI_VIDEO_COMPRESSION_MODE_CTRL),
-		 dsi_read(msm_host, REG_DSI_LANE_STATUS),
-		 dsi_read(msm_host, REG_DSI_CLKOUT_TIMING_CTRL));
-}
-
 static void dsi_op_mode_config(struct msm_dsi_host *msm_host,
 					bool video_mode, bool enable)
 {
@@ -1250,9 +1145,6 @@ static void dsi_op_mode_config(struct msm_dsi_host *msm_host,
 	}
 
 	dsi_write(msm_host, REG_DSI_CTRL, dsi_ctrl);
-
-	if (enable)
-		dsi_diag_dump_regs(msm_host);
 }
 
 static void dsi_set_tx_power_mode(int mode, struct msm_dsi_host *msm_host)
@@ -2051,66 +1943,6 @@ static int dsi_host_get_id(struct msm_dsi_host *msm_host)
 	return -EINVAL;
 }
 
-/*
- * DIAG (temporary, black-panel hunt): a dump that can be taken at any time,
- * not just at the moment the controller is enabled.  The one-shot print in
- * dsi_op_mode_config runs before the first commit, so it cannot show whether
- * the video engine is actually pumping frames or whether the FIFO underflows
- * afterwards.  Compare these against the vendor's dsi0_ctrl_reg, which is
- * readable at any time through its sde_dbg node.
- */
-static int dsi_diag_regs_show(struct seq_file *s, void *unused)
-{
-	struct msm_dsi_host *msm_host = s->private;
-	unsigned int off;
-
-	seq_printf(s, "CTRL        %08x\n", dsi_read(msm_host, REG_DSI_CTRL));
-	seq_printf(s, "STATUS0     %08x\n", dsi_read(msm_host, REG_DSI_STATUS0));
-	seq_printf(s, "FIFO_STATUS %08x\n", dsi_read(msm_host, REG_DSI_FIFO_STATUS));
-	seq_printf(s, "VID_CFG0    %08x\n", dsi_read(msm_host, REG_DSI_VID_CFG0));
-	seq_printf(s, "ACTIVE_H    %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_H));
-	seq_printf(s, "ACTIVE_V    %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_V));
-	seq_printf(s, "TOTAL       %08x\n", dsi_read(msm_host, REG_DSI_TOTAL));
-	seq_printf(s, "ACTIVE_HSYNC %08x\n", dsi_read(msm_host, REG_DSI_ACTIVE_HSYNC));
-	seq_printf(s, "CMD_DMA_CTRL %08x\n", dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL));
-	seq_printf(s, "DSC_CTRL    %08x\n", dsi_read(msm_host, REG_DSI_VIDEO_COMPRESSION_MODE_CTRL));
-	seq_printf(s, "LANE_STATUS %08x\n", dsi_read(msm_host, REG_DSI_LANE_STATUS));
-	seq_printf(s, "LANE_CTRL   %08x\n", dsi_read(msm_host, REG_DSI_LANE_CTRL));
-	seq_printf(s, "CLKOUT      %08x\n", dsi_read(msm_host, REG_DSI_CLKOUT_TIMING_CTRL));
-	seq_printf(s, "CLK_STATUS  %08x\n", dsi_read(msm_host, REG_DSI_CLK_STATUS));
-
-	/*
-	 * The whole controller window, in the same layout the vendor's own
-	 * dump uses, so the two can be compared line by line instead of by
-	 * thirteen named registers.
-	 */
-	seq_puts(s, "== window ==\n");
-	for (off = 0; off < msm_host->ctrl_size; off += 16) {
-		int i;
-
-		seq_printf(s, "0x%08x:", off);
-		for (i = 0; i < 16; i += 4)
-			seq_printf(s, " %08x", dsi_read(msm_host, off + i));
-		seq_putc(s, '\n');
-	}
-
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(dsi_diag_regs);
-
-static void dsi_diag_regs_init(struct msm_dsi_host *msm_host)
-{
-	struct dentry *dir;
-	char name[16];
-
-	snprintf(name, sizeof(name), "dsi%d", msm_host->id);
-	dir = debugfs_create_dir(name, NULL);
-	if (IS_ERR_OR_NULL(dir))
-		return;
-
-	debugfs_create_file("regs", 0444, dir, msm_host, &dsi_diag_regs_fops);
-}
-
 int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 {
 	struct msm_dsi_host *msm_host = NULL;
@@ -2149,11 +1981,8 @@ int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 				     "%s: unable to identify DSI host index\n",
 				     __func__);
 
-	dsi_diag_regs_init(msm_host);
-
 	/* fixup base address by io offset */
 	msm_host->ctrl_base += cfg->io_offset;
-	msm_host->ctrl_size -= cfg->io_offset;
 
 	ret = devm_regulator_bulk_get_const(&pdev->dev, cfg->num_regulators,
 					    cfg->regulator_data,
@@ -2610,7 +2439,9 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
 		goto unlock_ret;
 	}
 
-	msm_host->byte_intf_clk_div_2 = phy_shared_timings->byte_intf_clk_div_2;
+	msm_host->byte_intf_clk_rate = msm_host->byte_clk_rate;
+	if (phy_shared_timings->byte_intf_clk_div_2)
+		msm_host->byte_intf_clk_rate /= 2;
 
 	msm_dsi_sfpb_config(msm_host, true);
 

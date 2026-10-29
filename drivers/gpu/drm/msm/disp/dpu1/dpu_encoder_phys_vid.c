@@ -495,11 +495,6 @@ skip_flush:
 
 	atomic_set(&phys_enc->underrun_cnt, 0);
 
-	pr_info("DIAG vid_enable: intf%d state=%d -> %s\n",
-		phys_enc->hw_intf->idx - INTF_0, phys_enc->enable_state,
-		phys_enc->enable_state == DPU_ENC_DISABLED ?
-			"ENABLING" : "unchanged (timing will NOT be enabled)");
-
 	/* ctl_flush & timing engine enable will be triggered by framework */
 	if (phys_enc->enable_state == DPU_ENC_DISABLED)
 		phys_enc->enable_state = DPU_ENC_ENABLING;
@@ -661,9 +656,6 @@ static void dpu_encoder_phys_vid_handle_post_kickoff(
 	 * Video mode must flush CTL before enabling timing engine
 	 * Video encoders need to turn on their interfaces now
 	 */
-	pr_info("DIAG vid_post_kickoff: intf%d state=%d\n",
-		phys_enc->hw_intf->idx - INTF_0, phys_enc->enable_state);
-
 	if (phys_enc->enable_state == DPU_ENC_ENABLING) {
 		trace_dpu_enc_phys_vid_post_kickoff(DRMID(phys_enc->parent),
 				    phys_enc->hw_intf->idx - INTF_0);

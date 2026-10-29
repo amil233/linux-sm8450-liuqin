@@ -1,9 +1,9 @@
 name: Liuqin kernel
 on:
   push:
-    branches: [liuqin-7.0]
+    branches: [liuqin-7.0, "liuqin-7.0-t*"]
   pull_request:
-    branches: [liuqin-7.0]
+    branches: [liuqin-7.0, "liuqin-7.0-t*"]
   workflow_dispatch:
 permissions:
   contents: read

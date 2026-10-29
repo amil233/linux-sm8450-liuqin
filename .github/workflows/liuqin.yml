@@ -1,9 +1,9 @@
 name: Liuqin kernel
 on:
   push:
-    branches: [liuqin-6.17]
+    branches: [liuqin-6.17, liuqin-6.17-tianma]
   pull_request:
-    branches: [liuqin-6.17]
+    branches: [liuqin-6.17, liuqin-6.17-tianma]
   workflow_dispatch:
 permissions:
   contents: read

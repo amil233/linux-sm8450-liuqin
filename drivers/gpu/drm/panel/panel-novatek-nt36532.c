@@ -898,7 +898,12 @@ static const struct panel_desc pipa_tm_desc = {
 	.format = MIPI_DSI_FMT_RGB888,
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 		MIPI_DSI_CLOCK_NON_CONTINUOUS,
-	.drm_mode = pipa_mode_60_dsc,
+	/*
+	 * 120 Hz burst is the only combination known to light this module: the
+	 * same panel runs correctly on the 6.17 tree with exactly this pair,
+	 * while 60 Hz burst and 120 Hz non-burst are both black here.
+	 */
+	.drm_mode = pipa_mode_120,
 	.init_sequence = m81_36_02_0a_init_sequence,
 	.reset_sequence = pipa_tm_reset
 };

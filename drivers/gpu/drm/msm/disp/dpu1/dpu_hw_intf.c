@@ -67,10 +67,6 @@
 #define INTF_MISR_CTRL                  0x180
 #define INTF_MISR_SIGNATURE             0x184
 
-#define INTF_WD_TIMER_0_CTL		0x230
-#define INTF_WD_TIMER_0_CTL2		0x234
-#define INTF_WD_TIMER_0_LOAD_VALUE	0x238
-
 #define INTF_MUX                        0x25C
 #define INTF_STATUS                     0x26C
 #define INTF_AVR_CONTROL                0x270
@@ -263,18 +259,6 @@ static void dpu_hw_intf_enable_timing_engine(
 	struct dpu_hw_blk_reg_map *c = &intf->hw;
 	/* Note: Display interface select is handled in top block hw layer */
 	DPU_REG_WRITE(c, INTF_TIMING_ENGINE_EN, enable != 0);
-
-	/*
-	 * DIAG (temporary, black-panel hunt): the panel stays black because the
-	 * video interface never runs -- its vsync irq stops counting while the
-	 * vendor's keeps going.  Print what actually reached the block.
-	 */
-	pr_info("DIAG intf%d: enable=%u TE=%08x CFG=%08x CFG2=%08x MUX=%08x\n",
-		intf->idx - INTF_0, (unsigned int)enable,
-		DPU_REG_READ(c, INTF_TIMING_ENGINE_EN),
-		DPU_REG_READ(c, INTF_CONFIG),
-		DPU_REG_READ(c, INTF_CONFIG2),
-		DPU_REG_READ(c, INTF_MUX));
 }
 
 static void dpu_hw_intf_setup_prg_fetch(
@@ -491,7 +475,7 @@ static int dpu_hw_intf_get_vsync_info(struct dpu_hw_intf *intf,
 }
 
 static void dpu_hw_intf_vsync_sel(struct dpu_hw_intf *intf,
-				  struct dpu_vsync_source_cfg *cfg)
+				  enum dpu_vsync_source vsync_source)
 {
 	struct dpu_hw_blk_reg_map *c;
 
@@ -500,43 +484,7 @@ static void dpu_hw_intf_vsync_sel(struct dpu_hw_intf *intf,
 
 	c = &intf->hw;
 
-	DPU_REG_WRITE(c, INTF_TEAR_MDP_VSYNC_SEL, (cfg->vsync_source & 0xf));
-}
-
-static void dpu_hw_intf_vsync_sel_v8(struct dpu_hw_intf *intf,
-				  struct dpu_vsync_source_cfg *cfg)
-{
-	struct dpu_hw_blk_reg_map *c;
-
-	if (!intf)
-		return;
-
-	c = &intf->hw;
-
-	if (cfg->vsync_source >= DPU_VSYNC_SOURCE_WD_TIMER_4 &&
-	    cfg->vsync_source <= DPU_VSYNC_SOURCE_WD_TIMER_1) {
-		pr_warn_once("DPU 8.x supports only GPIOs and timer0 as TE sources\n");
-		return;
-	}
-
-	if (cfg->vsync_source == DPU_VSYNC_SOURCE_WD_TIMER_0) {
-		u32 reg;
-
-		DPU_REG_WRITE(c, INTF_WD_TIMER_0_LOAD_VALUE,
-			      CALCULATE_WD_LOAD_VALUE(cfg->frame_rate));
-
-		DPU_REG_WRITE(c, INTF_WD_TIMER_0_CTL, BIT(0)); /* clear timer */
-
-		reg  = BIT(8);		/* enable heartbeat timer */
-		reg |= BIT(0);		/* enable WD timer */
-		reg |= BIT(1);		/* select default 16 clock ticks */
-		DPU_REG_WRITE(c, INTF_WD_TIMER_0_CTL2, reg);
-
-		/* make sure that timers are enabled/disabled for vsync state */
-		wmb();
-	}
-
-	dpu_hw_intf_vsync_sel(intf, cfg);
+	DPU_REG_WRITE(c, INTF_TEAR_MDP_VSYNC_SEL, (vsync_source & 0xf));
 }
 
 static void dpu_hw_intf_disable_autorefresh(struct dpu_hw_intf *intf,
@@ -650,10 +598,7 @@ struct dpu_hw_intf *dpu_hw_intf_init(struct drm_device *dev,
 		c->ops.enable_tearcheck = dpu_hw_intf_enable_te;
 		c->ops.disable_tearcheck = dpu_hw_intf_disable_te;
 		c->ops.connect_external_te = dpu_hw_intf_connect_external_te;
-		if (mdss_rev->core_major_ver >= 8)
-			c->ops.vsync_sel = dpu_hw_intf_vsync_sel_v8;
-		else
-			c->ops.vsync_sel = dpu_hw_intf_vsync_sel;
+		c->ops.vsync_sel = dpu_hw_intf_vsync_sel;
 		c->ops.disable_autorefresh = dpu_hw_intf_disable_autorefresh;
 	}
 

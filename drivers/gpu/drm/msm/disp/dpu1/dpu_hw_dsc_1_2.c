@@ -103,21 +103,6 @@ static void dpu_hw_dsc_config_1_2(struct dpu_hw_dsc *hw_dsc,
 
 	sblk = hw_dsc->caps->sblk;
 
-	/*
-	 * DIAG (temporary, black-panel hunt): this is the variant DPU >= 7
-	 * actually uses (dpu_rm.c calls dpu_hw_dsc_init_1_2), so the parameters
-	 * that reach the encoder have to be printed here, not in dpu_hw_dsc.c.
-	 */
-	pr_info("DIAG dsc%d: mode=%u init_lines=%u bpp=%u bpc=%u slice=%ux%u x%u chunk=%u first_bpg=%u bpg_off=%u\n",
-		hw_dsc->idx - DSC_0, mode, initial_lines,
-		(unsigned int)dsc->bits_per_pixel,
-		(unsigned int)dsc->bits_per_component,
-		(unsigned int)dsc->slice_width, (unsigned int)dsc->slice_height,
-		(unsigned int)dsc->slice_count,
-		(unsigned int)dsc->slice_chunk_size,
-		(unsigned int)dsc->first_line_bpg_offset,
-		(unsigned int)dsc->second_line_bpg_offset);
-
 	if (mode & DSC_MODE_SPLIT_PANEL)
 		data |= BIT(0);
 

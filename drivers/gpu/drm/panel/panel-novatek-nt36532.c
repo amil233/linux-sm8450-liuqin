@@ -343,17 +343,10 @@ static int m81_36_02_0a_init_sequence(struct nt36532 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = nt36532_cmd_dsi(ctx) };
 
-	/*
-	 * The bootloader carries its own panel description for this exact
-	 * module (M81 36 02 0a, in the UEFI firmware) and its splash is the
-	 * only implementation known to light this panel.  That description
-	 * programs D1 as 0x28 and sends an extra 0F 0x20 in page 0x25; the
-	 * vendor kernel DT differs on both points.  Follow the bootloader.
-	 */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x27);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd0, 0x31);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd1, 0x28);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd1, 0x20);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd2, 0x38);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xde, 0x43);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xdf, 0x02);
@@ -460,7 +453,6 @@ static int m81_36_02_0a_init_sequence(struct nt36532 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x25);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x05, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0f, 0x20);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x14, 0x80);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x16, 0x40);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x20, 0x39);

@@ -1122,6 +1122,23 @@
 	status = "okay";
 };
 
+/*
+ * Keep the DisplayPort controller out of the display component set on this
+ * board.  msm_drv adds every remote endpoint of the MDP's output ports as a
+ * component and the DRM master refuses to bind until all of them are bound.
+ * The DP controller in turn waits on the USB-C altmode chain
+ * (aux_bridge -> drm_bridge -> pmic_glink_altmode -> typec), which never
+ * settles here, so with DP enabled the master stays in -EPROBE_DEFER forever:
+ * no card0, no first commit, and the panel's prepare() is never called.
+ *
+ * Consequence: no DisplayPort output over USB-C until that dependency is
+ * fixed.  The panel is unaffected; this is what lets liuqin's DRM, and with
+ * it the Tianma panel, come up at all.
+ */
+&mdss_dp0 {
+	status = "disabled";
+};
+
 &mdss_dsi0 {
 	vdda-supply = <&pm8350c_l10>;
 

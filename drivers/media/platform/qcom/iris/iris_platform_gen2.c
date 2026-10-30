@@ -778,8 +778,8 @@ struct iris_platform_data sm8450_data = {
 	.fwname = "qcom/vpu/vpu20_4v.mbn",
 	.pas_id = IRIS_PAS_ID,
 	.inst_caps = &platform_inst_cap_sm8450,
-	.inst_fw_caps = inst_fw_cap_sm8550,
-	.inst_fw_caps_size = ARRAY_SIZE(inst_fw_cap_sm8550),
+	.inst_fw_caps_dec = inst_fw_cap_sm8550_dec,
+	.inst_fw_caps_dec_size = ARRAY_SIZE(inst_fw_cap_sm8550_dec),
 	.tz_cp_config_data = &tz_cp_config_sm8550,
 	.core_arch = VIDEO_ARCH_LX,
 	.hw_response_timeout = HW_RESPONSE_TIMEOUT_VALUE,
@@ -789,17 +789,17 @@ struct iris_platform_data sm8450_data = {
 	.num_vpp_pipe = 4,
 	.max_session_count = 16,
 	.max_core_mbpf = ((8192 * 4320) / 256) * 2,
-	.input_config_params_default = sm8550_vdec_input_config_params_default,
-	.input_config_params_default_size =
+	.dec_input_config_params_default = sm8550_vdec_input_config_params_default,
+	.dec_input_config_params_default_size =
 		ARRAY_SIZE(sm8550_vdec_input_config_params_default),
-	.input_config_params_hevc = sm8550_vdec_input_config_param_hevc,
-	.input_config_params_hevc_size =
+	.dec_input_config_params_hevc = sm8550_vdec_input_config_param_hevc,
+	.dec_input_config_params_hevc_size =
 		ARRAY_SIZE(sm8550_vdec_input_config_param_hevc),
-	.input_config_params_vp9 = sm8550_vdec_input_config_param_vp9,
-	.input_config_params_vp9_size =
+	.dec_input_config_params_vp9 = sm8550_vdec_input_config_param_vp9,
+	.dec_input_config_params_vp9_size =
 		ARRAY_SIZE(sm8550_vdec_input_config_param_vp9),
-	.output_config_params = sm8550_vdec_output_config_params,
-	.output_config_params_size = ARRAY_SIZE(sm8550_vdec_output_config_params),
+	.dec_output_config_params = sm8550_vdec_output_config_params,
+	.dec_output_config_params_size = ARRAY_SIZE(sm8550_vdec_output_config_params),
 	.dec_input_prop = sm8550_vdec_subscribe_input_properties,
 	.dec_input_prop_size = ARRAY_SIZE(sm8550_vdec_subscribe_input_properties),
 	.dec_output_prop_avc = sm8550_vdec_subscribe_output_properties_avc,

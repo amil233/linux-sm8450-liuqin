@@ -12,6 +12,7 @@ TEE Subsystem
    amd-tee
    ts-tee
    qseecom
+   qtee
 
 .. only::  subproject and html
 

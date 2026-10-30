@@ -67,7 +67,8 @@ https://github.com/wrobelda/linux/tree/qcom-qseecom-tee). Its user-visible
 ABI is therefore provisional:
 
 - ``TEE_IMPL_ID_QSEECOM`` is 5, the value the RFC takes after
-  ``TEE_IMPL_ID_QTEE`` (4) in v6.18. Value 4 is not defined in this tree.
+  ``TEE_IMPL_ID_QTEE`` (4), which upstream v6.18 defines for its own
+  qcomtee driver (both drivers coexist in this tree).
   Clients must match on the ``impl_id`` reported by ``TEE_IOC_VERSION`` and
   must be updated together with the kernel if upstream assigns another value.
 - Applications are named by a memref holding a NUL-terminated string with a

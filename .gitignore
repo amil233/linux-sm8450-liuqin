@@ -183,3 +183,7 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# keep the CI workflow tracked (negate any rule that ignores .github)
+!.github
+!.github/**

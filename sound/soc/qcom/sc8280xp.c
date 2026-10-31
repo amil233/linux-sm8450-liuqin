@@ -8,7 +8,6 @@
 #include <sound/soc-dapm.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
-#include <sound/cs35l41.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/jack.h>
 #include <linux/input-event-codes.h>
@@ -19,86 +18,10 @@
 struct sc8280xp_snd_data {
 	bool stream_prepared[AFE_PORT_MAX];
 	struct snd_soc_card *card;
-	struct sdw_stream_runtime *sruntime[AFE_PORT_MAX];
 	struct snd_soc_jack jack;
 	struct snd_soc_jack dp_jack[8];
 	bool jack_setup;
 };
-
-static bool sc8280xp_is_tdm_dai(const struct snd_soc_dai *dai)
-{
-	return dai->id >= PRIMARY_TDM_RX_0 && dai->id <= QUINARY_TDM_TX_7;
-}
-
-static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
-				  struct snd_pcm_hw_params *params)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-	struct snd_soc_dai *codec_dai;
-	struct qcom_snd_tdm_slot_cfg cpu_cfg;
-	struct qcom_snd_tdm_slot_cfg codec_cfg;
-	int bclk_freq;
-	unsigned int codec_fmt = SND_SOC_DAIFMT_I2S;
-	int ret;
-	int i;
-
-	ret = qcom_snd_get_dai_tdm_slots(rtd, &cpu_cfg, &codec_cfg);
-	if (ret)
-		return ret == -ENOENT ? 0 : ret;
-
-	if (!cpu_cfg.slots)
-		return 0;
-
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_BP_FP);
-	if (ret && ret != -ENOTSUPP)
-		return ret;
-
-	/* The liuqin speaker bus uses the vendor DSP_A frame format. */
-	if (!strcmp(rtd->card->name, "Xiaomi-Pad-6-Pro") &&
-	    cpu_dai->id == TERTIARY_TDM_RX_0)
-		codec_fmt = SND_SOC_DAIFMT_DSP_A;
-
-	if (of_device_is_compatible(rtd->card->dev->of_node, "qcom,sm8450-sndcard")) {
-		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			ret = snd_soc_dai_set_fmt(codec_dai,
-						  SND_SOC_DAIFMT_BC_FC |
-						  SND_SOC_DAIFMT_NB_NF |
-						  codec_fmt);
-			if (ret && ret != -ENOTSUPP)
-				return ret;
-		}
-	}
-
-	ret = qcom_snd_apply_dai_tdm_slots_cfg(rtd, &cpu_cfg, &codec_cfg);
-	if (ret)
-		return ret;
-
-	bclk_freq = snd_soc_tdm_params_to_bclk(params, cpu_cfg.slot_width,
-						cpu_cfg.slots, 1);
-	if (bclk_freq <= 0)
-		return -EINVAL;
-
-	if (!strcmp(rtd->card->name, "Xiaomi-Pad-6-Pro") &&
-	    cpu_dai->id == TERTIARY_TDM_RX_0) {
-		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			ret = snd_soc_component_set_sysclk(codec_dai->component,
-							   CS35L41_CLKID_SCLK, 0,
-							   bclk_freq,
-							   SND_SOC_CLOCK_IN);
-			if (ret)
-				return ret;
-		}
-	}
-
-	/*
-	 * Newer q6apm owns a child BCLK and receives LPAIF_MI2S_BCLK here.
-	 * product/6.17 has neither that clock ID nor the child-clock lifecycle;
-	 * the Audio IF topology remains the sole clock owner on this base.
-	 */
-
-	return 0;
-}
 
 static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
 {
@@ -144,20 +67,6 @@ static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
 	return qcom_snd_wcd_jack_setup(rtd, &data->jack, &data->jack_setup);
 }
 
-static void sc8280xp_snd_shutdown(struct snd_pcm_substream *substream)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-	struct sc8280xp_snd_data *pdata = snd_soc_card_get_drvdata(rtd->card);
-	struct sdw_stream_runtime *sruntime = pdata->sruntime[cpu_dai->id];
-
-	if (sc8280xp_is_tdm_dai(cpu_dai))
-		return;
-
-	pdata->sruntime[cpu_dai->id] = NULL;
-	sdw_release_stream(sruntime);
-}
-
 static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				     struct snd_pcm_hw_params *params)
 {
@@ -172,59 +81,19 @@ static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 	channels->min = 2;
 	channels->max = 2;
-	if (of_device_is_compatible(rtd->card->dev->of_node,
-				    "qcom,sm8450-sndcard") &&
-	    cpu_dai->id == TERTIARY_TDM_RX_0) {
-		/*
-		 * liuqin's four CS35L41 speakers use the vendor's 48 kHz,
-		 * 4-channel S24_LE tertiary-TDM group.  Keep the generic
-		 * SC8280XP restrictions for every other TDM backend.
-		 */
-		channels->min = 4;
-		channels->max = 4;
-		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
-	} else {
-		switch (cpu_dai->id) {
-		case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
-			snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
-			break;
-		case TX_CODEC_DMA_TX_0:
-		case TX_CODEC_DMA_TX_1:
-		case TX_CODEC_DMA_TX_2:
-		case TX_CODEC_DMA_TX_3:
-			channels->min = 1;
-			break;
-		default:
-			break;
-		}
+	switch (cpu_dai->id) {
+	case TX_CODEC_DMA_TX_0:
+	case TX_CODEC_DMA_TX_1:
+	case TX_CODEC_DMA_TX_2:
+	case TX_CODEC_DMA_TX_3:
+		channels->min = 1;
+		break;
+	default:
+		break;
 	}
 
 
 	return 0;
-}
-
-static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
-				struct snd_pcm_hw_params *params)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-	struct sc8280xp_snd_data *pdata = snd_soc_card_get_drvdata(rtd->card);
-
-	if (sc8280xp_is_tdm_dai(cpu_dai))
-		return sc8280xp_tdm_hw_params(substream, params);
-
-	return qcom_snd_sdw_hw_params(substream, params, &pdata->sruntime[cpu_dai->id]);
-}
-
-static int sc8280xp_snd_startup(struct snd_pcm_substream *substream)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-
-	if (sc8280xp_is_tdm_dai(cpu_dai))
-		return 0;
-
-	return qcom_snd_sdw_startup(substream);
 }
 
 static int sc8280xp_snd_prepare(struct snd_pcm_substream *substream)
@@ -232,13 +101,8 @@ static int sc8280xp_snd_prepare(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
-	struct sdw_stream_runtime *sruntime = data->sruntime[cpu_dai->id];
 
-	if (sc8280xp_is_tdm_dai(cpu_dai))
-		return 0;
-
-	return qcom_snd_sdw_prepare(substream, sruntime,
-				    &data->stream_prepared[cpu_dai->id]);
+	return qcom_snd_sdw_prepare(substream, &data->stream_prepared[cpu_dai->id]);
 }
 
 static int sc8280xp_snd_hw_free(struct snd_pcm_substream *substream)
@@ -246,19 +110,13 @@ static int sc8280xp_snd_hw_free(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-	struct sdw_stream_runtime *sruntime = data->sruntime[cpu_dai->id];
 
-	if (sc8280xp_is_tdm_dai(cpu_dai))
-		return 0;
-
-	return qcom_snd_sdw_hw_free(substream, sruntime,
-				    &data->stream_prepared[cpu_dai->id]);
+	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
 }
 
 static const struct snd_soc_ops sc8280xp_be_ops = {
-	.startup = sc8280xp_snd_startup,
-	.shutdown = sc8280xp_snd_shutdown,
-	.hw_params = sc8280xp_snd_hw_params,
+	.startup = qcom_snd_sdw_startup,
+	.shutdown = qcom_snd_sdw_shutdown,
 	.hw_free = sc8280xp_snd_hw_free,
 	.prepare = sc8280xp_snd_prepare,
 };
@@ -306,6 +164,7 @@ static int sc8280xp_platform_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id snd_sc8280xp_dt_match[] = {
+	{.compatible = "qcom,kaanapali-sndcard", "kaanapali"},
 	{.compatible = "qcom,qcm6490-idp-sndcard", "qcm6490"},
 	{.compatible = "qcom,qcs615-sndcard", "qcs615"},
 	{.compatible = "qcom,qcs6490-rb3gen2-sndcard", "qcs6490"},

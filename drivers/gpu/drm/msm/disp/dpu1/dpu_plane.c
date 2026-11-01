@@ -374,7 +374,6 @@ static void _dpu_plane_set_ot_limit(struct drm_plane *plane,
 	ot_params.height = drm_rect_height(&pipe_cfg->src_rect);
 	ot_params.is_wfd = !pdpu->is_rt_pipe;
 	ot_params.frame_rate = frame_rate;
-	ot_params.vbif_idx = VBIF_RT;
 	ot_params.rd = true;
 
 	if (!_dpu_plane_sspp_clk_force_ctrl(pipe->sspp, dpu_kms->hw_mdp,
@@ -402,14 +401,12 @@ static void _dpu_plane_set_qos_remap(struct drm_plane *plane,
 	bool forced_on = false;
 
 	memset(&qos_params, 0, sizeof(qos_params));
-	qos_params.vbif_idx = VBIF_RT;
 	qos_params.xin_id = pipe->sspp->cap->xin_id;
 	qos_params.num = pipe->sspp->idx - SSPP_VIG0;
 	qos_params.is_rt = pdpu->is_rt_pipe;
 
-	DPU_DEBUG_PLANE(pdpu, "pipe:%d vbif:%d xin:%d rt:%d\n",
+	DPU_DEBUG_PLANE(pdpu, "pipe:%d xin:%d rt:%d\n",
 			qos_params.num,
-			qos_params.vbif_idx,
 			qos_params.xin_id, qos_params.is_rt);
 
 	if (!_dpu_plane_sspp_clk_force_ctrl(pipe->sspp, dpu_kms->hw_mdp,
@@ -821,17 +818,8 @@ static int dpu_plane_atomic_check_nosspp(struct drm_plane *plane,
 {
 	int i, ret = 0, min_scale, max_scale;
 	struct dpu_plane *pdpu = to_dpu_plane(plane);
-	struct dpu_kms *kms = _dpu_plane_get_kms(&pdpu->base);
-	u64 max_mdp_clk_rate = kms->perf.max_core_clk_rate;
 	struct dpu_plane_state *pstate = to_dpu_plane_state(new_plane_state);
-	struct dpu_sw_pipe_cfg *pipe_cfg;
-	struct dpu_sw_pipe_cfg *r_pipe_cfg;
-	struct dpu_sw_pipe_cfg init_pipe_cfg;
 	struct drm_rect fb_rect = { 0 };
-	const struct drm_display_mode *mode = &crtc_state->adjusted_mode;
-	uint32_t max_linewidth;
-	u32 num_lm;
-	int stage_id, num_stages;
 
 	min_scale = FRAC_16_16(1, MAX_UPSCALE_RATIO);
 	max_scale = MAX_DOWNSCALE_RATIO << 16;
@@ -854,11 +842,6 @@ static int dpu_plane_atomic_check_nosspp(struct drm_plane *plane,
 		return -EINVAL;
 	}
 
-	num_lm = dpu_crtc_get_num_lm(crtc_state);
-
-	/* state->src is 16.16, src_rect is not */
-	drm_rect_fp_to_int(&init_pipe_cfg.src_rect, &new_plane_state->src);
-
 	fb_rect.x2 = new_plane_state->fb->width;
 	fb_rect.y2 = new_plane_state->fb->height;
 
@@ -880,26 +863,48 @@ static int dpu_plane_atomic_check_nosspp(struct drm_plane *plane,
 		if (pstate->layout.plane_pitch[i] > DPU_SSPP_MAX_PITCH_SIZE)
 			return -E2BIG;
 
+	pstate->needs_qos_remap = drm_atomic_crtc_needs_modeset(crtc_state);
+
+	return 0;
+}
+
+static int dpu_plane_split(struct drm_plane *plane,
+			   struct drm_plane_state *new_plane_state,
+			   const struct drm_crtc_state *crtc_state)
+{
+	struct dpu_plane *pdpu = to_dpu_plane(plane);
+	struct dpu_kms *kms = _dpu_plane_get_kms(&pdpu->base);
+	u64 max_mdp_clk_rate = kms->perf.max_core_clk_rate;
+	struct dpu_plane_state *pstate = to_dpu_plane_state(new_plane_state);
+	struct dpu_sw_pipe_cfg *pipe_cfg;
+	struct dpu_sw_pipe_cfg *r_pipe_cfg;
+	const struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+	uint32_t max_linewidth;
+	u32 num_lm;
+	int stage_id, num_stages;
+
 	max_linewidth = pdpu->catalog->caps->max_linewidth;
 
-	drm_rect_rotate(&init_pipe_cfg.src_rect,
-			new_plane_state->fb->width, new_plane_state->fb->height,
-			new_plane_state->rotation);
-
-	/*
-	 * We have 1 mixer pair cfg for 1:1:1 and 2:2:1 topology, 2 mixer pair
-	 * configs for left and right half screen in case of 4:4:2 topology.
-	 * But we may have 2 rect to split wide plane that exceeds limit with 1
-	 * config for 2:2:1. So need to handle both wide plane splitting, and
-	 * two halves of screen splitting for quad-pipe case. Check dest
-	 * rectangle left/right clipping first, then check wide rectangle
-	 * splitting in every half next.
-	 */
+	/* In non-virtual plane case, one mixer pair is always needed. */
+	num_lm = dpu_crtc_get_num_lm(crtc_state);
 	if (dpu_use_virtual_planes)
 		num_stages = (num_lm + 1) / 2;
 	else
 		num_stages = 1;
-	/* iterate mixer configs for this plane, to separate left/right with the id */
+
+	/*
+	 * For wide plane that exceeds SSPP rectangle constrain, it needed to
+	 * be split and mapped to 2 rectangles with 1 config for 2:2:1.
+	 * For 2 interfaces cases, such as dual DSI, 2:2:2 topology is needed.
+	 * If the width or clock exceeds hardware limitation in every half of
+	 * screen, 4:4:2 topology is needed and virtual plane feature should
+	 * be enabled to map plane to more than 1 SSPP. 2 stage configs are
+	 * needed to serve 2 mixer pairs in this 4:4:2 case. So both left/right
+	 * half of plane splitting, and splitting within the half of screen is
+	 * needed in quad-pipe case. Check dest rectangle left/right clipping
+	 * and iterate mixer configs for this plane first, then check wide
+	 * rectangle splitting in every half next.
+	 */
 	for (stage_id = 0; stage_id < num_stages; stage_id++) {
 		struct drm_rect mixer_rect = {
 			.x1 = stage_id * mode->hdisplay / num_stages,
@@ -913,6 +918,11 @@ static int dpu_plane_atomic_check_nosspp(struct drm_plane *plane,
 		r_pipe_cfg = &pstate->pipe_cfg[cfg_idx + 1];
 
 		drm_rect_fp_to_int(&pipe_cfg->src_rect, &new_plane_state->src);
+
+		drm_rect_rotate(&pipe_cfg->src_rect,
+				new_plane_state->fb->width, new_plane_state->fb->height,
+				new_plane_state->rotation);
+
 		pipe_cfg->dst_rect = new_plane_state->dst;
 
 		DPU_DEBUG_PLANE(pdpu, "checking src " DRM_RECT_FMT
@@ -973,15 +983,12 @@ static int dpu_plane_atomic_check_nosspp(struct drm_plane *plane,
 					    new_plane_state->rotation);
 	}
 
-	pstate->needs_qos_remap = drm_atomic_crtc_needs_modeset(crtc_state);
-
 	return 0;
 }
 
 static int dpu_plane_is_multirect_capable(struct dpu_hw_sspp *sspp,
 					  struct dpu_sw_pipe_cfg *pipe_cfg,
-					  const struct msm_format *fmt,
-					  bool validate_sspp)
+					  const struct msm_format *fmt)
 {
 	if (drm_rect_width(&pipe_cfg->src_rect) != drm_rect_width(&pipe_cfg->dst_rect) ||
 	    drm_rect_height(&pipe_cfg->src_rect) != drm_rect_height(&pipe_cfg->dst_rect))
@@ -993,7 +1000,7 @@ static int dpu_plane_is_multirect_capable(struct dpu_hw_sspp *sspp,
 	if (MSM_FORMAT_IS_YUV(fmt))
 		return false;
 
-	if (!validate_sspp)
+	if (!sspp)
 		return true;
 
 	if (!test_bit(DPU_SSPP_SMART_DMA_V1, &sspp->cap->features) &&
@@ -1019,7 +1026,7 @@ static int dpu_plane_is_multirect_parallel_capable(struct dpu_hw_sspp *sspp,
 						   const struct msm_format *fmt,
 						   uint32_t max_linewidth)
 {
-	return dpu_plane_is_multirect_capable(sspp, pipe_cfg, fmt, true) &&
+	return dpu_plane_is_multirect_capable(sspp, pipe_cfg, fmt) &&
 		dpu_plane_is_parallel_capable(pipe_cfg, fmt, max_linewidth);
 }
 
@@ -1049,6 +1056,7 @@ static int dpu_plane_atomic_check_sspp(struct drm_plane *plane,
 		drm_atomic_get_new_plane_state(state, plane);
 	struct dpu_plane *pdpu = to_dpu_plane(plane);
 	struct dpu_plane_state *pstate = to_dpu_plane_state(new_plane_state);
+
 	struct dpu_sw_pipe *pipe;
 	struct dpu_sw_pipe_cfg *pipe_cfg;
 	int ret = 0, i;
@@ -1056,7 +1064,7 @@ static int dpu_plane_atomic_check_sspp(struct drm_plane *plane,
 	for (i = 0; i < PIPES_PER_PLANE; i++) {
 		pipe = &pstate->pipe[i];
 		pipe_cfg = &pstate->pipe_cfg[i];
-		if (!pipe->sspp)
+		if (!drm_rect_width(&pipe_cfg->src_rect))
 			continue;
 		DPU_DEBUG_PLANE(pdpu, "pipe %d is in use, validate it\n", i);
 		ret = dpu_plane_atomic_check_pipe(pdpu, pipe, pipe_cfg,
@@ -1120,8 +1128,8 @@ static int dpu_plane_try_multirect_shared(struct dpu_plane_state *pstate,
 		return false;
 
 	/* Do not validate SSPP of current plane when it is not ready */
-	if (!dpu_plane_is_multirect_capable(pipe->sspp, pipe_cfg, fmt, false) ||
-	    !dpu_plane_is_multirect_capable(prev_pipe->sspp, prev_pipe_cfg, prev_fmt, true))
+	if (!dpu_plane_is_multirect_capable(pipe->sspp, pipe_cfg, fmt) ||
+	    !dpu_plane_is_multirect_capable(prev_pipe->sspp, prev_pipe_cfg, prev_fmt))
 		return false;
 
 	if (MSM_FORMAT_IS_UBWC(fmt))
@@ -1164,60 +1172,12 @@ static int dpu_plane_try_multirect_shared(struct dpu_plane_state *pstate,
 static int dpu_plane_atomic_check(struct drm_plane *plane,
 				  struct drm_atomic_state *state)
 {
-	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,
-										 plane);
-	int ret = 0;
-	struct dpu_plane *pdpu = to_dpu_plane(plane);
-	struct dpu_plane_state *pstate = to_dpu_plane_state(new_plane_state);
-	struct dpu_kms *dpu_kms = _dpu_plane_get_kms(plane);
-	struct dpu_sw_pipe *pipe = &pstate->pipe[0];
-	struct dpu_sw_pipe *r_pipe = &pstate->pipe[1];
-	struct dpu_sw_pipe_cfg *pipe_cfg = &pstate->pipe_cfg[0];
-	struct dpu_sw_pipe_cfg *r_pipe_cfg = &pstate->pipe_cfg[1];
-	const struct drm_crtc_state *crtc_state = NULL;
-	uint32_t max_linewidth = dpu_kms->catalog->caps->max_linewidth;
-
-	if (new_plane_state->crtc)
-		crtc_state = drm_atomic_get_new_crtc_state(state,
-							   new_plane_state->crtc);
-
-	pipe->sspp = dpu_rm_get_sspp(&dpu_kms->rm, pdpu->pipe);
-
-	if (!pipe->sspp)
-		return -EINVAL;
-
-	ret = dpu_plane_atomic_check_nosspp(plane, new_plane_state, crtc_state);
-	if (ret)
-		return ret;
-
-	if (!new_plane_state->visible)
-		return 0;
-
-	if (!dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
-					      pipe->sspp,
-					      msm_framebuffer_format(new_plane_state->fb),
-					      max_linewidth)) {
-		DPU_DEBUG_PLANE(pdpu, "invalid " DRM_RECT_FMT " /" DRM_RECT_FMT
-				" max_line:%u, can't use split source\n",
-				DRM_RECT_ARG(&pipe_cfg->src_rect),
-				DRM_RECT_ARG(&r_pipe_cfg->src_rect),
-				max_linewidth);
-		return -E2BIG;
-	}
-
-	return dpu_plane_atomic_check_sspp(plane, state, crtc_state);
-}
-
-static int dpu_plane_virtual_atomic_check(struct drm_plane *plane,
-					  struct drm_atomic_state *state)
-{
 	struct drm_plane_state *plane_state =
 		drm_atomic_get_plane_state(state, plane);
 	struct drm_plane_state *old_plane_state =
 		drm_atomic_get_old_plane_state(state, plane);
-	struct dpu_plane_state *pstate = to_dpu_plane_state(plane_state);
+	int ret = 0;
 	struct drm_crtc_state *crtc_state = NULL;
-	int ret, i;
 
 	if (IS_ERR(plane_state))
 		return PTR_ERR(plane_state);
@@ -1230,16 +1190,8 @@ static int dpu_plane_virtual_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
-	if (!plane_state->visible) {
-		/*
-		 * resources are freed by dpu_crtc_assign_plane_resources(),
-		 * but clean them here.
-		 */
-		for (i = 0; i < PIPES_PER_PLANE; i++)
-			pstate->pipe[i].sspp = NULL;
-
+	if (!plane_state->visible)
 		return 0;
-	}
 
 	/*
 	 * Force resource reallocation if the format of FB or src/dst have
@@ -1254,7 +1206,6 @@ static int dpu_plane_virtual_atomic_check(struct drm_plane *plane,
 	    msm_framebuffer_format(old_plane_state->fb) !=
 	    msm_framebuffer_format(plane_state->fb))
 		crtc_state->planes_changed = true;
-
 	return 0;
 }
 
@@ -1270,30 +1221,30 @@ static int dpu_plane_assign_resource_in_stage(struct dpu_sw_pipe *pipe,
 	struct dpu_sw_pipe *r_pipe = pipe + 1;
 	struct dpu_sw_pipe_cfg *r_pipe_cfg = pipe_cfg + 1;
 
-	if (drm_rect_width(&pipe_cfg->src_rect) != 0) {
-		pipe->sspp = dpu_rm_reserve_sspp(&dpu_kms->rm, global_state, crtc, reqs);
-		if (!pipe->sspp)
-			return -ENODEV;
-		pipe->multirect_index = DPU_SSPP_RECT_SOLO;
-		pipe->multirect_mode = DPU_SSPP_MULTIRECT_NONE;
-	}
+	if (drm_rect_width(&pipe_cfg->src_rect) == 0)
+		return 0;
 
-	if (drm_rect_width(&r_pipe_cfg->src_rect) != 0 &&
-	    dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
+	pipe->sspp = dpu_rm_reserve_sspp(&dpu_kms->rm, global_state, crtc, reqs);
+	if (!pipe->sspp)
+		return -ENODEV;
+	pipe->multirect_index = DPU_SSPP_RECT_SOLO;
+	pipe->multirect_mode = DPU_SSPP_MULTIRECT_NONE;
+
+	if (drm_rect_width(&r_pipe_cfg->src_rect) == 0)
+		return 0;
+
+	if (dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
 					      pipe->sspp,
 					      msm_framebuffer_format(plane_state->fb),
 					      dpu_kms->catalog->caps->max_linewidth))
-		goto stage_assinged;
+		return 0;
 
-	if (drm_rect_width(&r_pipe_cfg->src_rect) != 0) {
-		r_pipe->sspp = dpu_rm_reserve_sspp(&dpu_kms->rm, global_state, crtc, reqs);
-		if (!r_pipe->sspp)
-			return -ENODEV;
-		r_pipe->multirect_index = DPU_SSPP_RECT_SOLO;
-		r_pipe->multirect_mode = DPU_SSPP_MULTIRECT_NONE;
-	}
+	r_pipe->sspp = dpu_rm_reserve_sspp(&dpu_kms->rm, global_state, crtc, reqs);
+	if (!r_pipe->sspp)
+		return -ENODEV;
+	r_pipe->multirect_index = DPU_SSPP_RECT_SOLO;
+	r_pipe->multirect_mode = DPU_SSPP_MULTIRECT_NONE;
 
-stage_assinged:
 	return 0;
 }
 
@@ -1301,9 +1252,9 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 					      struct dpu_global_state *global_state,
 					      struct drm_atomic_state *state,
 					      struct drm_plane_state *plane_state,
+					      const struct drm_crtc_state *crtc_state,
 					      struct drm_plane_state **prev_adjacent_plane_state)
 {
-	const struct drm_crtc_state *crtc_state = NULL;
 	struct drm_plane *plane = plane_state->plane;
 	struct dpu_kms *dpu_kms = _dpu_plane_get_kms(plane);
 	struct dpu_rm_sspp_requirements reqs;
@@ -1312,10 +1263,6 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 	struct dpu_sw_pipe_cfg *pipe_cfg;
 	const struct msm_format *fmt;
 	int i, ret;
-
-	if (plane_state->crtc)
-		crtc_state = drm_atomic_get_new_crtc_state(state,
-							   plane_state->crtc);
 
 	pstate = to_dpu_plane_state(plane_state);
 	for (i = 0; i < STAGES_PER_PLANE; i++)
@@ -1327,6 +1274,10 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 
 	if (!plane_state->fb)
 		return -EINVAL;
+
+	ret = dpu_plane_split(plane, plane_state, crtc_state);
+	if (ret)
+		return ret;
 
 	fmt = msm_framebuffer_format(plane_state->fb);
 	reqs.yuv = MSM_FORMAT_IS_YUV(fmt);
@@ -1358,14 +1309,55 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 	return dpu_plane_atomic_check_sspp(plane, state, crtc_state);
 }
 
+static int dpu_plane_assign_resources(struct drm_crtc *crtc,
+				      struct dpu_global_state *global_state,
+				      struct drm_atomic_state *state,
+				      struct drm_plane_state *plane_state,
+				      const struct drm_crtc_state *crtc_state)
+{
+	struct drm_plane *plane = plane_state->plane;
+	struct dpu_kms *dpu_kms = _dpu_plane_get_kms(plane);
+	struct dpu_plane_state *pstate = to_dpu_plane_state(plane_state);
+	struct dpu_sw_pipe *pipe = &pstate->pipe[0];
+	struct dpu_sw_pipe *r_pipe = &pstate->pipe[1];
+	struct dpu_sw_pipe_cfg *pipe_cfg = &pstate->pipe_cfg[0];
+	struct dpu_sw_pipe_cfg *r_pipe_cfg = &pstate->pipe_cfg[1];
+	struct dpu_plane *pdpu = to_dpu_plane(plane);
+	int ret;
+
+	pipe->sspp = dpu_rm_get_sspp(&dpu_kms->rm, pdpu->pipe);
+	if (!pipe->sspp)
+		return -EINVAL;
+
+	ret = dpu_plane_split(plane, plane_state, crtc_state);
+	if (ret)
+		return ret;
+
+	if (!dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
+					      pipe->sspp,
+					      msm_framebuffer_format(plane_state->fb),
+					      dpu_kms->catalog->caps->max_linewidth)) {
+		DPU_DEBUG_PLANE(pdpu, "invalid " DRM_RECT_FMT " /" DRM_RECT_FMT
+				" max_line:%u, can't use split source\n",
+				DRM_RECT_ARG(&pipe_cfg->src_rect),
+				DRM_RECT_ARG(&r_pipe_cfg->src_rect),
+				dpu_kms->catalog->caps->max_linewidth);
+		return -E2BIG;
+	}
+
+	return dpu_plane_atomic_check_sspp(plane, state, crtc_state);
+}
+
 int dpu_assign_plane_resources(struct dpu_global_state *global_state,
 			       struct drm_atomic_state *state,
 			       struct drm_crtc *crtc,
 			       struct drm_plane_state **states,
 			       unsigned int num_planes)
 {
-	unsigned int i;
 	struct drm_plane_state *prev_adjacent_plane_state[STAGES_PER_PLANE] = { NULL };
+	const struct drm_crtc_state *crtc_state = NULL;
+	unsigned int i;
+	int ret;
 
 	for (i = 0; i < num_planes; i++) {
 		struct drm_plane_state *plane_state = states[i];
@@ -1374,8 +1366,18 @@ int dpu_assign_plane_resources(struct dpu_global_state *global_state,
 		    !plane_state->visible)
 			continue;
 
-		int ret = dpu_plane_virtual_assign_resources(crtc, global_state,
+		if (plane_state->crtc)
+			crtc_state = drm_atomic_get_new_crtc_state(state,
+								   plane_state->crtc);
+
+		if (!dpu_use_virtual_planes)
+			ret = dpu_plane_assign_resources(crtc, global_state,
+							 state, plane_state,
+							 crtc_state);
+		else
+			ret = dpu_plane_virtual_assign_resources(crtc, global_state,
 							     state, plane_state,
+							     crtc_state,
 							     prev_adjacent_plane_state);
 		if (ret)
 			return ret;
@@ -1557,9 +1559,8 @@ static void dpu_plane_sspp_atomic_update(struct drm_plane *plane,
 			crtc->base.id, DRM_RECT_ARG(&state->dst),
 			&fmt->pixel_format, MSM_FORMAT_IS_UBWC(fmt));
 
-	/* move the assignment here, to ease handling to another pairs later */
 	for (i = 0; i < PIPES_PER_PLANE; i++) {
-		if (!pstate->pipe[i].sspp)
+		if (!drm_rect_width(&pstate->pipe_cfg[i].src_rect))
 			continue;
 		dpu_plane_sspp_update_pipe(plane, &pstate->pipe[i],
 					   &pstate->pipe_cfg[i], fmt,
@@ -1573,7 +1574,7 @@ static void dpu_plane_sspp_atomic_update(struct drm_plane *plane,
 	pstate->plane_fetch_bw = 0;
 	pstate->plane_clk = 0;
 	for (i = 0; i < PIPES_PER_PLANE; i++) {
-		if (!pstate->pipe[i].sspp)
+		if (!drm_rect_width(&pstate->pipe_cfg[i].src_rect))
 			continue;
 		pstate->plane_fetch_bw += _dpu_plane_calc_bw(pdpu->catalog, fmt,
 							     &crtc->mode, &pstate->pipe_cfg[i]);
@@ -1598,9 +1599,6 @@ static void _dpu_plane_atomic_disable(struct drm_plane *plane)
 
 		trace_dpu_plane_disable(DRMID(plane), false,
 					pstate->pipe[i].multirect_mode);
-
-		if (!pipe->sspp)
-			continue;
 
 		if (i % PIPES_PER_STAGE == 0)
 			continue;
@@ -1816,7 +1814,7 @@ static const struct drm_plane_helper_funcs dpu_plane_helper_funcs = {
 static const struct drm_plane_helper_funcs dpu_plane_virtual_helper_funcs = {
 	.prepare_fb = dpu_plane_prepare_fb,
 	.cleanup_fb = dpu_plane_cleanup_fb,
-	.atomic_check = dpu_plane_virtual_atomic_check,
+	.atomic_check = dpu_plane_atomic_check,
 	.atomic_update = dpu_plane_atomic_update,
 };
 

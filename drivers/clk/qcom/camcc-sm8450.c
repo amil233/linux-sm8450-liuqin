@@ -2933,7 +2933,7 @@ static struct clk_alpha_pll *cam_cc_sm8450_plls[] = {
 	&cam_cc_pll8,
 };
 
-static u32 cam_cc_sm8450_critical_cbcrs[] = {
+static const u32 cam_cc_sm8450_critical_cbcrs[] = {
 	0x1320c, /* CAM_CC_GDSC_CLK */
 };
 
@@ -3090,7 +3090,7 @@ static void cam_cc_sm8450_clk_regs_configure(struct device *dev,
 	sm8475_ife_0_gdsc.clk_dis_wait_val = (gdscr >> 12) & 0xf;
 }
 
-static struct qcom_cc_driver_data cam_cc_sm8450_driver_data = {
+static const struct qcom_cc_driver_data cam_cc_sm8450_driver_data = {
 	.alpha_plls = cam_cc_sm8450_plls,
 	.num_alpha_plls = ARRAY_SIZE(cam_cc_sm8450_plls),
 	.clk_cbcrs = cam_cc_sm8450_critical_cbcrs,

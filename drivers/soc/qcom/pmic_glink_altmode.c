@@ -14,10 +14,12 @@
 #include <linux/soc/qcom/pdr.h>
 #include <drm/bridge/aux-bridge.h>
 
+#include <linux/usb/pd.h>
 #include <linux/usb/typec_altmode.h>
 #include <linux/usb/typec_dp.h>
 #include <linux/usb/typec_mux.h>
 #include <linux/usb/typec_retimer.h>
+#include <linux/usb/typec_tbt.h>
 
 #include <linux/soc/qcom/pmic_glink.h>
 
@@ -30,8 +32,6 @@
 #define ALTMODE_PAN_EN		0x10
 #define ALTMODE_PAN_ACK		0x11
 
-#define PMIC_GLINK_LIUQIN_DP_SID	0xff01
-
 struct usbc_write_req {
 	struct pmic_glink_hdr   hdr;
 	__le32 cmd;
@@ -39,11 +39,41 @@ struct usbc_write_req {
 	__le32 reserved;
 };
 
-#define NOTIFY_PAYLOAD_SIZE 16
+struct usbc_sc8280x_dp_data {
+	u8 pin_assignment : 6;
+	u8 hpd_state : 1;
+	u8 hpd_irq : 1;
+	u8 res[7];
+};
+
+/* Used for both TBT and USB4 notifications */
+struct usbc_sc8280x_tbt_data {
+	u8 usb_speed : 3;
+	u8 cable_type : 3;
+	/* This field is NOP on USB4, all cables support rounded rates by spec */
+	u8 rounded_cable : 1;
+	u8 power_limited : 1;
+	u8 res[11];
+};
+
 struct usbc_notify {
 	struct pmic_glink_hdr hdr;
-	char payload[NOTIFY_PAYLOAD_SIZE];
-	u32 reserved;
+	u8 port_idx;
+	u8 orientation;
+	u8 mux_ctrl;
+#define MUX_CTRL_STATE_NO_CONN			0
+#define MUX_CTRL_STATE_USB3_ONLY		1
+#define MUX_CTRL_STATE_DP4LN			2
+#define MUX_CTRL_STATE_USB3_DP			3
+#define MUX_CTRL_STATE_TUNNELING		4
+
+	u8 res;
+	__le16 vid;
+	__le16 svid;
+	union usbc_sc8280x_extended_data {
+		struct usbc_sc8280x_dp_data dp;
+		struct usbc_sc8280x_tbt_data tbt;
+	} extended_data;
 };
 
 struct usbc_sc8180x_notify {
@@ -76,18 +106,20 @@ struct pmic_glink_altmode_port {
 	struct typec_retimer *typec_retimer;
 	struct typec_retimer_state retimer_state;
 	struct typec_altmode dp_alt;
+	struct typec_altmode tbt_alt;
 
 	struct work_struct work;
 
 	struct auxiliary_device *bridge;
 
 	enum typec_orientation orientation;
-	enum drm_connector_status conn_status;
 	u16 svid;
+	struct usbc_sc8280x_tbt_data tbt_data;
 	u8 dp_data;
 	u8 mode;
 	u8 hpd_state;
 	u8 hpd_irq;
+	u8 mux_ctrl;
 };
 
 #define work_to_altmode(w) container_of((w), struct pmic_glink_altmode, enable_work)
@@ -173,6 +205,102 @@ static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 		dev_err(altmode->dev, "failed to setup retimer to DP: %d\n", ret);
 }
 
+static void pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
+					  struct pmic_glink_altmode_port *port)
+{
+	struct usbc_sc8280x_tbt_data *tbt = &port->tbt_data;
+	struct typec_thunderbolt_data tbt_data = {};
+	u32 cable_speed;
+	int ret;
+
+	/* Device Discover Mode VDO */
+	tbt_data.device_mode = TBT_MODE;
+	tbt_data.device_mode |= TBT_SET_ADAPTER(TBT_ADAPTER_TBT3);
+
+	/* Cable Discover Mode VDO */
+	tbt_data.cable_mode = TBT_MODE;
+
+	if (tbt->usb_speed == 0) {
+		cable_speed = TBT_CABLE_USB3_PASSIVE;
+	} else if (tbt->usb_speed == 1) {
+		cable_speed = TBT_CABLE_10_AND_20GBPS;
+	} else {
+		dev_err(altmode->dev,
+			"Got illegal TBT3 cable speed value (%u), falling back to passive\n",
+			tbt->usb_speed);
+		cable_speed = TBT_CABLE_USB3_PASSIVE;
+	}
+	tbt_data.cable_mode |= TBT_SET_CABLE_SPEED(cable_speed);
+
+	if (tbt->cable_type) {
+		tbt_data.cable_mode |= TBT_CABLE_ACTIVE_PASSIVE;
+		tbt_data.cable_mode |= TBT_SET_CABLE_ROUNDED(tbt->rounded_cable);
+	}
+
+	/* Enter Mode VDO */
+	tbt_data.enter_vdo |= TBT_MODE;
+	tbt_data.enter_vdo |= TBT_ENTER_MODE_CABLE_SPEED(cable_speed);
+
+	if (tbt->cable_type) {
+		tbt_data.enter_vdo |= TBT_CABLE_ACTIVE_PASSIVE;
+		tbt_data.enter_vdo |= TBT_SET_CABLE_ROUNDED(tbt->rounded_cable);
+	}
+
+	port->state.alt = &port->tbt_alt;
+	port->state.data = &tbt_data;
+	port->state.mode = TYPEC_MODAL_STATE(port->mode);
+
+	ret = typec_mux_set(port->typec_mux, &port->state);
+	if (ret)
+		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
+
+	port->retimer_state.alt = &port->tbt_alt;
+	port->retimer_state.data = &tbt_data;
+	port->retimer_state.mode = TYPEC_MODAL_STATE(port->mode);
+
+	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
+	if (ret)
+		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+}
+
+static void pmic_glink_altmode_enable_usb4(struct pmic_glink_altmode *altmode,
+					   struct pmic_glink_altmode_port *port)
+{
+	struct usbc_sc8280x_tbt_data *tbt = &port->tbt_data;
+	struct enter_usb_data data = {};
+	int ret;
+
+	data.eudo = FIELD_PREP(EUDO_USB_MODE_MASK, EUDO_USB_MODE_USB4);
+
+	if (tbt->usb_speed == 0) {
+		data.eudo |= FIELD_PREP(EUDO_CABLE_SPEED_MASK, EUDO_CABLE_SPEED_USB4_GEN2);
+	} else if (tbt->usb_speed == 1) {
+		data.eudo |= FIELD_PREP(EUDO_CABLE_SPEED_MASK, EUDO_CABLE_SPEED_USB4_GEN3);
+	} else {
+		pr_err("Got illegal USB4 cable speed value (%u), falling back to G2\n",
+		       tbt->usb_speed);
+		data.eudo |= FIELD_PREP(EUDO_CABLE_SPEED_MASK, EUDO_CABLE_SPEED_USB4_GEN2);
+	}
+
+	data.eudo |= FIELD_PREP(EUDO_CABLE_TYPE_MASK, tbt->cable_type);
+
+	port->state.alt = NULL;
+	port->state.data = &data;
+	port->state.mode = TYPEC_MODE_USB4;
+
+	ret = typec_mux_set(port->typec_mux, &port->state);
+	if (ret)
+		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
+
+	port->retimer_state.alt = NULL;
+	port->retimer_state.data = &data;
+	port->retimer_state.mode = TYPEC_MODE_USB4;
+
+	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
+	if (ret)
+		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+}
+
 static void pmic_glink_altmode_enable_usb(struct pmic_glink_altmode *altmode,
 					  struct pmic_glink_altmode_port *port)
 {
@@ -217,18 +345,6 @@ static void pmic_glink_altmode_safe(struct pmic_glink_altmode *altmode,
 		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
 }
 
-/*
- * The liuqin PMIC charger firmware identifies the DisplayPort alt mode with a
- * vendor svid (0xff01) in the notification opcode instead of the USB-IF
- * DisplayPort SVID (0x040e); the vendor msm_drm registers its DP altmode
- * client with id 0xff01.  Accept both so the worker routes DP notifications
- * to the DP path rather than misclassifying them as USB.
- */
-static bool pmic_glink_altmode_is_dp(u16 svid)
-{
-	return svid == USB_TYPEC_DP_SID || svid == PMIC_GLINK_LIUQIN_DP_SID;
-}
-
 static void pmic_glink_altmode_worker(struct work_struct *work)
 {
 	struct pmic_glink_altmode_port *alt_port = work_to_altmode_port(work);
@@ -237,8 +353,13 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 
 	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
 
-	if (pmic_glink_altmode_is_dp(alt_port->svid)) {
-		if (alt_port->mode == 0xff) {
+	/*
+	 * MUX_CTRL_STATE_DP4LN/USB3_DP may only be set if SVID=DP, but we need
+	 * to special-case the SVID=DP && mux_ctrl=NO_CONN case to deliver a
+	 * HPD notification
+	 */
+	if (alt_port->svid == USB_TYPEC_DP_SID) {
+		if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
 			pmic_glink_altmode_safe(altmode, alt_port);
 		} else {
 			pmic_glink_altmode_enable_dp(altmode, alt_port,
@@ -247,44 +368,25 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 						     alt_port->hpd_irq);
 		}
 
-		/*
-		 * Report the connector as connected only once the sink asserts HPD
-		 * (hpd_state in the notification), i.e. once the dock's DP bridge is
-		 * actually up.  Driving it connected regardless makes the DP driver
-		 * probe a bridge that is not ready yet, and that first AUX
-		 * transaction gets no reply -- the DPCD read then fails with
-		 * -ETIMEDOUT and the display never comes up.  This is why DP worked
-		 * only on the plugs whose notification carried hpd_state=1.
-		 *
-		 * An earlier version dropped this gate because it deadlocked: the
-		 * bridge asserts HPD only after the source powers the DP PHY, and
-		 * mainline powers the PHY only after the DPCD read.
-		 * msm_dp_ctrl_phy_init() now brings the PHY up first (as the
-		 * vendor's dp_ctrl_host_init() does), which breaks that cycle.
-		 *
-		 * Notify *only* on a connect/disconnect transition.  The sink
-		 * re-sends its notification whenever HPD-IRQ toggles, and every
-		 * notify makes the DP driver run a full plug cycle, whose
-		 * msm_dp_display_host_init() resets the DPU/MDSS.  Doing that every
-		 * couple of seconds resets the display controller underneath the
-		 * live internal DSI panel and blanks the screen.
-		 */
-		conn_status = (alt_port->mode == 0xff || !alt_port->hpd_state) ?
-			connector_status_disconnected : connector_status_connected;
+		if (alt_port->hpd_state)
+			conn_status = connector_status_connected;
+		else
+			conn_status = connector_status_disconnected;
 
-		if (alt_port->conn_status != conn_status) {
-			alt_port->conn_status = conn_status;
-
-			dev_dbg(altmode->dev,
-				"dp hpd bridge notify: svid=%#06x mode=%u orient=%d hpd_state=%u -> %s\n",
-				alt_port->svid, alt_port->mode, (int)alt_port->orientation,
-				alt_port->hpd_state,
-				conn_status == connector_status_connected ? "connected" : "disconnected");
-
-			drm_aux_hpd_bridge_notify(&alt_port->bridge->dev, conn_status);
-		}
-	} else {
+		drm_aux_hpd_bridge_notify(&alt_port->bridge->dev, conn_status);
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
+		if (alt_port->svid == USB_TYPEC_TBT_SID)
+			pmic_glink_altmode_enable_tbt(altmode, alt_port);
+		else
+			pmic_glink_altmode_enable_usb4(altmode, alt_port);
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_USB3_ONLY) {
 		pmic_glink_altmode_enable_usb(altmode, alt_port);
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
+		pmic_glink_altmode_safe(altmode, alt_port);
+	} else {
+		dev_err(altmode->dev, "Got unknown mux_ctrl: %u on port %u, forcing safe mode\n",
+			alt_port->mux_ctrl, alt_port->index);
+		pmic_glink_altmode_safe(altmode, alt_port);
 	}
 
 	pmic_glink_altmode_request(altmode, ALTMODE_PAN_ACK, alt_port->index);
@@ -299,18 +401,6 @@ static enum typec_orientation pmic_glink_altmode_orientation(unsigned int orient
 	else
 		return TYPEC_ORIENTATION_NONE;
 }
-
-/*
- * liuqin was once decoded as reporting the typec_orientation enum directly
- * (1 = normal, 2 = reverse).  It does not: in every alt-mode notification
- * observed on the tablet a connected dock reports 0 or 1 and only a
- * disconnect reports 2, which is exactly the 0/1 encoding handled below plus
- * 2 for "no alt mode".  The enum decode therefore turned a disconnect into a
- * real orientation change, and qmp_combo_typec_switch_set() responds to one
- * of those by tearing the combo PHY's COM block down and power-cycling USB3
- * underneath the running xHCI -- which timed out ("phy initialization
- * timed-out") and reset the tablet on every unplug.
- */
 
 #define SC8180X_PORT_MASK		0x000000ff
 #define SC8180X_ORIENTATION_MASK	0x0000ff00
@@ -371,11 +461,10 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 					       u16 svid, const void *data, size_t len)
 {
 	struct pmic_glink_altmode_port *alt_port;
+	const struct usbc_sc8280x_tbt_data *tbt;
+	const struct usbc_sc8280x_dp_data *dp;
 	const struct usbc_notify *notify;
 	u8 orientation;
-	u8 hpd_state;
-	u8 hpd_irq;
-	u8 mode;
 	u8 port;
 
 	if (len != sizeof(*notify)) {
@@ -386,11 +475,8 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 
 	notify = data;
 
-	port = notify->payload[0];
-	orientation = notify->payload[1];
-	mode = FIELD_GET(SC8280XP_DPAM_MASK, notify->payload[8]) - DPAM_HPD_A;
-	hpd_state = FIELD_GET(SC8280XP_HPD_STATE_MASK, notify->payload[8]);
-	hpd_irq = FIELD_GET(SC8280XP_HPD_IRQ_MASK, notify->payload[8]);
+	port = notify->port_idx;
+	orientation = notify->orientation;
 
 	if (port >= ARRAY_SIZE(altmode->ports) || !altmode->ports[port].altmode) {
 		dev_dbg(altmode->dev, "notification on undefined port %d\n", port);
@@ -400,15 +486,21 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 	alt_port = &altmode->ports[port];
 	alt_port->orientation = pmic_glink_altmode_orientation(orientation);
 	alt_port->svid = svid;
-	alt_port->mode = mode;
-	alt_port->hpd_state = hpd_state;
-	alt_port->hpd_irq = hpd_irq;
-	dev_dbg(altmode->dev,
-		"sc8280xp notify: svid=%#06x port=%u orient=%u(%s) dpam=0x%02x mode=%u hpd_state=%u hpd_irq=%u\n",
-		svid, port, orientation,
-		alt_port->orientation == TYPEC_ORIENTATION_NORMAL ? "normal" :
-		alt_port->orientation == TYPEC_ORIENTATION_REVERSE ? "reverse" : "none",
-		notify->payload[8], mode, hpd_state, hpd_irq);
+	alt_port->mux_ctrl = notify->mux_ctrl;
+
+	if (svid == USB_TYPEC_DP_SID) {
+		dp = &notify->extended_data.dp;
+
+		alt_port->mode = dp->pin_assignment - DPAM_HPD_A;
+		alt_port->hpd_state = dp->hpd_state;
+		alt_port->hpd_irq = dp->hpd_irq;
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
+		/* Valid for both USB4 and TBT3 */
+		tbt = &notify->extended_data.tbt;
+
+		alt_port->tbt_data = *tbt;
+	}
+
 	schedule_work(&alt_port->work);
 }
 
@@ -533,6 +625,10 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 		alt_port->dp_alt.svid = USB_TYPEC_DP_SID;
 		alt_port->dp_alt.mode = USB_TYPEC_DP_MODE;
 		alt_port->dp_alt.active = 1;
+
+		alt_port->tbt_alt.svid = USB_TYPEC_TBT_SID;
+		alt_port->tbt_alt.mode = TYPEC_TBT_MODE;
+		alt_port->tbt_alt.active = 1;
 
 		alt_port->typec_mux = fwnode_typec_mux_get(fwnode);
 		if (IS_ERR(alt_port->typec_mux)) {

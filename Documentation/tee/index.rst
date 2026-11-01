@@ -13,10 +13,3 @@ TEE Subsystem
    ts-tee
    qseecom
    qtee
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

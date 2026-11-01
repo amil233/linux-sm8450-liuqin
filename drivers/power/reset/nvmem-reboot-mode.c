@@ -15,26 +15,29 @@
 struct nvmem_reboot_mode {
 	struct reboot_mode_driver reboot;
 	struct nvmem_cell *cell;
-	size_t cell_bytes;
 };
 
 static int nvmem_reboot_mode_write(struct reboot_mode_driver *reboot,
 				    unsigned int magic)
 {
-	int ret;
 	struct nvmem_reboot_mode *nvmem_rbm;
-	__le32 value = cpu_to_le32(magic);
+	size_t buf_len;
+	void *buf;
+	int ret;
 
 	nvmem_rbm = container_of(reboot, struct nvmem_reboot_mode, reboot);
 
-	ret = nvmem_cell_write(nvmem_rbm->cell, &value,
-			       nvmem_rbm->cell_bytes);
+	buf = nvmem_cell_read(nvmem_rbm->cell, &buf_len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+	kfree(buf);
+
+	if (buf_len > sizeof(magic))
+		return -EINVAL;
+
+	ret = nvmem_cell_write(nvmem_rbm->cell, &magic, buf_len);
 	if (ret < 0)
 		dev_err(reboot->dev, "update reboot mode bits failed\n");
-	else if (ret != nvmem_rbm->cell_bytes)
-		ret = -EIO;
-	else
-		ret = 0;
 
 	return ret;
 }
@@ -43,7 +46,6 @@ static int nvmem_reboot_mode_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct nvmem_reboot_mode *nvmem_rbm;
-	void *cell_value;
 
 	nvmem_rbm = devm_kzalloc(&pdev->dev, sizeof(*nvmem_rbm), GFP_KERNEL);
 	if (!nvmem_rbm)
@@ -57,19 +59,6 @@ static int nvmem_reboot_mode_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(nvmem_rbm->cell),
 				     "failed to get the nvmem cell reboot-mode\n");
 	}
-
-	cell_value = nvmem_cell_read(nvmem_rbm->cell,
-				     &nvmem_rbm->cell_bytes);
-	if (IS_ERR(cell_value))
-		return dev_err_probe(&pdev->dev, PTR_ERR(cell_value),
-				     "failed to read the nvmem cell reboot-mode\n");
-	kfree(cell_value);
-
-	if (!nvmem_rbm->cell_bytes ||
-	    nvmem_rbm->cell_bytes > sizeof(u32))
-		return dev_err_probe(&pdev->dev, -E2BIG,
-				     "unsupported reboot-mode cell width %zu\n",
-				     nvmem_rbm->cell_bytes);
 
 	ret = devm_reboot_mode_register(&pdev->dev, &nvmem_rbm->reboot);
 	if (ret)

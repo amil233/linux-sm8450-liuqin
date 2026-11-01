@@ -21,10 +21,11 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/proc_fs.h>
 #include <linux/input/mt.h>
 #include <linux/debugfs.h>
-#include <linux/of_gpio.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/init.h>
 #include <linux/string.h>
@@ -707,16 +708,38 @@ return:
 	n.a.
 *******************************************************/
 #ifdef CONFIG_OF
+/*
+ * <linux/of_gpio.h> and of_get_named_gpio() were removed upstream in v7.1
+ * (commit b6420bd5aa0c). Translate the legacy vendor-prefixed property
+ * ("novatek,foo-gpio") to a GPIO number without holding the line, keeping
+ * the gpio_request_one()/gpio_set_value() probe path unchanged. The gpiod
+ * lookup tries both "foo-gpios" and the legacy "foo-gpio" suffix.
+ */
+static int32_t nvt_of_get_named_gpio(struct device_node *np, const char *con_id)
+{
+	struct gpio_desc *desc;
+	int32_t ret;
+
+	desc = fwnode_gpiod_get_index(of_fwnode_handle(np), con_id, 0,
+				      GPIOD_ASIS, KBUILD_MODNAME);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	ret = desc_to_gpio(desc);
+	gpiod_put(desc);
+	return ret;
+}
+
 static int32_t nvt_parse_dt(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	int32_t ret = 0;
 
 #if NVT_TOUCH_SUPPORT_HW_RST
-	ts->reset_gpio = of_get_named_gpio_flags(np, "novatek,reset-gpio", 0, &ts->reset_flags);
+	ts->reset_gpio = nvt_of_get_named_gpio(np, "novatek,reset");
 	NVT_LOG("novatek,reset-gpio=%d\n", ts->reset_gpio);
 #endif
-	ts->irq_gpio = of_get_named_gpio(np, "novatek,irq-gpio", 0);
+	ts->irq_gpio = nvt_of_get_named_gpio(np, "novatek,irq");
 	NVT_LOG("novatek,irq-gpio=%d\n", ts->irq_gpio);
 
 	ts->pen_support = of_property_read_bool(np, "novatek,pen-support");

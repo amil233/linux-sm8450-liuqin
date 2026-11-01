@@ -49,7 +49,8 @@
 #endif
 
 #include <linux/gpio.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
 
@@ -3972,6 +3973,28 @@ err_pinctrl_get:
  * the most important information to obtain are: IRQ and RESET gpio numbers, power regulator names
  * In the device file node is possible to define additional optional information that can be parsed here.
  */
+/*
+ * <linux/of_gpio.h> and of_get_named_gpio() were removed upstream in v7.1
+ * (commit b6420bd5aa0c). Translate the legacy vendor-prefixed property
+ * ("fts,foo-gpio") to a GPIO number without holding the line, keeping the
+ * gpio_request()/gpio_direction_output() paths unchanged. The gpiod lookup
+ * tries both "foo-gpios" and the legacy "foo-gpio" suffix.
+ */
+static int fts_of_get_named_gpio(struct device_node *np, const char *con_id)
+{
+	struct gpio_desc *desc;
+	int ret;
+
+	desc = fwnode_gpiod_get_index(of_fwnode_handle(np), con_id, 0,
+				      GPIOD_ASIS, KBUILD_MODNAME);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	ret = desc_to_gpio(desc);
+	gpiod_put(desc);
+	return ret;
+}
+
 static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 {
 	int retval;
@@ -3980,7 +4003,7 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 	struct fts_config_info *config_info;
 	u32 temp_val;
 
-	bdata->irq_gpio = of_get_named_gpio(np, "fts,irq-gpio", 0);
+	bdata->irq_gpio = fts_of_get_named_gpio(np, "fts,irq");
 
 	logError(0, "%s irq_gpio = %d\n", tag, bdata->irq_gpio);
 	retval = of_property_read_string(np, "fts,pwr-reg-name", &name);
@@ -4003,7 +4026,7 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 		logError(0, "%s bus_reg_name = %s\n", tag, name);
 	}
 
-	retval = of_get_named_gpio(np, "fts,avdd-gpio", 0);
+	retval = fts_of_get_named_gpio(np, "fts,avdd");
 	if (retval < 0) {
 		logError(0,"%s can't find avdd-gpio[%d]\n", tag, retval);
 		bdata->avdd_gpio = 0;
@@ -4014,7 +4037,7 @@ static int parse_dt(struct device *dev, struct fts_hw_platform_data *bdata)
 
 	if (of_property_read_bool(np, "fts,reset-gpio-enable")) {
 		bdata->reset_gpio =
-			of_get_named_gpio(np, "fts,reset-gpio", 0);
+			fts_of_get_named_gpio(np, "fts,reset");
 		logError(0, "%s reset_gpio =%d\n", tag, bdata->reset_gpio);
 	} else {
 		bdata->reset_gpio = GPIO_NOT_DEFINED;

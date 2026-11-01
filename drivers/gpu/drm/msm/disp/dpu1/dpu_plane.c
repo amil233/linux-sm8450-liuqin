@@ -948,9 +948,18 @@ static int dpu_plane_split(struct drm_plane *plane,
 		DPU_DEBUG_PLANE(pdpu, "Got clip src:" DRM_RECT_FMT " dst: " DRM_RECT_FMT "\n",
 				DRM_RECT_ARG(&pipe_cfg->src_rect), DRM_RECT_ARG(&pipe_cfg->dst_rect));
 
-		/* Split wide rect into 2 rect */
+		/*
+		 * Split wide rect into 2 rect. Each pipe feeds a single layer
+		 * mixer of the mixer pair assigned to this stage, so a rect
+		 * that is still as wide as the whole stage window has to be
+		 * split as well, to give every mixer of the pair its own rect.
+		 * In the quad-pipe topology (num_lm > 2) the stage window is
+		 * one mixer pair, i.e. twice the width of a single mixer.
+		 */
 		if ((drm_rect_width(&pipe_cfg->src_rect) > max_linewidth) ||
-		     _dpu_plane_calc_clk(mode, pipe_cfg) > max_mdp_clk_rate) {
+		    drm_rect_width(&pipe_cfg->dst_rect) >
+			drm_rect_width(&mixer_rect) / PIPES_PER_STAGE ||
+		    _dpu_plane_calc_clk(mode, pipe_cfg) > max_mdp_clk_rate) {
 
 			if (drm_rect_width(&pipe_cfg->src_rect) > 2 * max_linewidth) {
 				DPU_DEBUG_PLANE(pdpu, "invalid src " DRM_RECT_FMT " line:%u\n",

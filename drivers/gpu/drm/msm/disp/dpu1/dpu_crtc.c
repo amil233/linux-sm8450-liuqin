@@ -1384,7 +1384,6 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
 	struct msm_display_topology topology = {0};
 	struct drm_encoder *drm_enc;
-	u32 num_rt_intf;
 
 	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc_state->encoder_mask)
 		dpu_encoder_update_topology(drm_enc, &topology, crtc_state->state,
@@ -1398,14 +1397,11 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	 * Dual display
 	 * 2 LM, 2 INTF ( Split display using 2 interfaces)
 	 *
-	 * If DSC is enabled, try to use 4:4:2 topology if there is enough
-	 * resource. Otherwise, use 2:2:2 topology.
-	 *
 	 * Single display
 	 * 1 LM, 1 INTF
 	 * 2 LM, 1 INTF (stream merge to support high resolution interfaces)
 	 *
-	 * If DSC is enabled, use 2:2:1 topology
+	 * If DSC is enabled, use 2 LMs for 2:2:1 topology
 	 *
 	 * Add dspps to the reservation requirements if ctm or gamma_lut are requested
 	 *
@@ -1415,35 +1411,26 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	 *
 	 * For non-DSC CWB usecases, have the num_lm be decided by the
 	 * (mode->hdisplay > MAX_HDISPLAY_SPLIT) check.
+	 *
+	 * Note: upstream deliberately does not enable the 4:4:2 quad-pipe
+	 * topology (4 LM / 4 DSC) for bonded dual-DSI DSC panels: that was
+	 * reverted in da9168d8ef1c ("Revert drm/msm/dpu: Enable quad-pipe
+	 * for DSC and dual-DSI case") as broken for this exact scenario, and
+	 * has not been re-enabled since.  Keep the 2 LM / 2 DSC topology for
+	 * this panel, which matches the vendor qcom,display-topology
+	 * <2 2 2> and all of our lit boots; the virtual-plane SSPP
+	 * allocation machinery still applies to it.
 	 */
 
-	num_rt_intf = topology.num_intf;
-	if (topology.cwb_enabled)
-		num_rt_intf--;
-
-	if (topology.num_dsc) {
-		/*
-		 * Without virtual planes each plane is limited to a single
-		 * stage, i.e. one pair of SSPP rectangles, and cannot feed
-		 * more than two layer mixers: the quad-pipe 4:4:2 topology
-		 * would leave half of the mixer lanes without valid pixel
-		 * data.  Fall back to one DSC/LM per interface, which is
-		 * also the topology the vendor kernel uses for bonded
-		 * dual-DSI DSC panels (qcom,display-topology = <2 2 2>).
-		 */
-		if (dpu_kms->catalog->dsc_count >= num_rt_intf * 2 &&
-		    (num_rt_intf * 2 <= 2 || dpu_use_virtual_planes))
-			topology.num_dsc = num_rt_intf * 2;
-		else
-			topology.num_dsc = num_rt_intf;
-		topology.num_lm = topology.num_dsc;
-	} else if (num_rt_intf == 2) {
+	if (topology.num_intf == 2 && !topology.cwb_enabled)
 		topology.num_lm = 2;
-	} else if (dpu_kms->catalog->caps->has_3d_merge) {
+	else if (topology.num_dsc == 2)
+		topology.num_lm = 2;
+	else if (dpu_kms->catalog->caps->has_3d_merge &&
+		 topology.num_dsc == 0)
 		topology.num_lm = (mode->hdisplay > MAX_HDISPLAY_SPLIT) ? 2 : 1;
-	} else {
+	else
 		topology.num_lm = 1;
-	}
 
 	if (crtc_state->ctm || crtc_state->gamma_lut)
 		topology.num_dspp = topology.num_lm;

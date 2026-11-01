@@ -201,10 +201,11 @@ static void ktz8866_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ktz8866_ids[] = {
-	{ "ktz8866", 0},
-	{ "ktz8866a", 1 },
-	{ "ktz8866b", 2 },
-	{}
+	{ .name = "ktz8866" },
+	/* driver_data distinguishes the primary (a) and secondary (b) chip pair */
+	{ .name = "ktz8866a", .driver_data = 1 },
+	{ .name = "ktz8866b", .driver_data = 2 },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ktz8866_ids);
 

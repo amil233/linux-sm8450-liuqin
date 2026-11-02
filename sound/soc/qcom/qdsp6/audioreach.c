@@ -175,7 +175,7 @@ struct apm_module_hw_intf_clk_cfg {
 
 static_assert(sizeof(struct param_id_tdm_intf_cfg) == 28);
 static_assert(sizeof(struct param_id_tdm_lane_cfg) == 4);
-static_assert(sizeof(struct param_id_hw_intf_cfg) == 16);
+static_assert(sizeof(struct param_id_hw_intf_clk_cfg) == 16);
 struct apm_audio_if_module_intf_cfg {
 	struct apm_module_param_data param_data;
 	struct param_id_audio_if_intf_cfg cfg;
@@ -1098,8 +1098,8 @@ static int audioreach_i2s_set_media_format(struct q6apm_graph *graph,
  * are not translated from the unrelated legacy AFE_PARAM_ID_TDM_CONFIG ABI.
  */
 static int audioreach_tdm_set_media_format(struct q6apm_graph *graph,
-					   struct audioreach_module *module,
-					   struct audioreach_module_config *cfg)
+					   const struct audioreach_module *module,
+					   const struct audioreach_module_config *cfg)
 {
 	struct apm_module_hw_intf_clk_cfg *clk_cfg;
 	struct apm_module_frame_size_factor_cfg *fs_cfg;

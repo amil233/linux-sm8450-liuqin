@@ -1631,7 +1631,8 @@ static int ucsi_reset_ppm(struct ucsi *ucsi)
 	 */
 	if (cci & (UCSI_CCI_ACK_COMPLETE | UCSI_CCI_COMMAND_COMPLETE)) {
 		command = UCSI_ACK_CC_CI | UCSI_ACK_COMMAND_COMPLETE;
-		ret = ucsi->ops->sync_control(ucsi, command, NULL, NULL, 0);
+		ret = ucsi->ops->sync_control(ucsi, command, NULL, NULL, 0,
+					      NULL, 0);
 		dev_dbg(ucsi->dev, "ppm_reset: stale ack cci=0x%x, ack ret=%d\n",
 			 cci, ret);
 		ret = ucsi->ops->poll_cci(ucsi, &cci);

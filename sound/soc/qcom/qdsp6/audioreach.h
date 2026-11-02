@@ -39,6 +39,8 @@ struct q6apm_graph;
 #define MODULE_ID_SPEAKER_PROTECTION	0x070010E2
 #define MODULE_ID_SPEAKER_PROTECTION_VI	0x070010E3
 #define MODULE_ID_OPUS_DEC		0x07001174
+#define MODULE_ID_AUDIO_IF_SINK		0x0700117C
+#define MODULE_ID_AUDIO_IF_SOURCE	0x0700117D
 
 #define APM_CMD_GET_SPF_STATE		0x01001021
 #define APM_CMD_RSP_GET_SPF_STATE	0x02001007
@@ -579,6 +581,30 @@ struct param_id_hw_intf_clk_cfg {
 
 #define PARAM_ID_AUDIO_IF_INTF_CFG	0x08001B11
 
+/*
+ * struct param_id_audio_if_intf_cfg - Audio interface configuration
+ * @qaif_type: Audio interface type (e.g. QAIF, QAIF_VA)
+ * @intf_idx: Interface instance index
+ * @intf_mode: Interface operating mode (TDM/PCM/I2S)
+ * @ctrl_data_out_enable: Enable sharing of data-out signal with other masters
+ * @active_slot_mask: Bitmask indicating active slots
+ * @nslots_per_frame: Number of slots per audio frame
+ * @slot_width: Width of each slot in bits
+ * @active_lane_mask: Bitmask of active data lanes
+ * @frame_sync_rate: Frame sync rate in Hz
+ * @frame_sync_src: Frame sync source selection
+ * @frame_sync_mode: Frame sync mode configuration
+ * @invert_frame_sync_pulse: Invert frame sync polarity when set
+ * @frame_sync_data_delay: Data delay from frame sync in bit clocks
+ * @bit_clk_type: Bit clock type (internal / external)
+ * @inv_int_bit_clk: Invert internal bit clock when set
+ * @inv_ext_bit_clk: Invert external bit clock when set
+ *
+ * This structure defines configuration parameters for the Qualcomm
+ * Audio Interface (QAIF) block. It is used to program interface
+ * characteristics such as slot configuration, clocking and frame
+ * synchronization behaviour.
+ */
 struct param_id_audio_if_intf_cfg {
 	uint16_t qaif_type;
 	uint16_t intf_idx;
@@ -604,6 +630,16 @@ struct param_id_audio_if_intf_cfg {
 #define AUDIO_IF_FRAME_DURATION_MIN_US			1
 #define AUDIO_IF_FRAME_DURATION_MAX_US			100000
 
+/**
+ * struct param_id_hw_ep_frame_duration - Hardware endpoint frame duration
+ * @frame_duration_in_us: Frame duration in microseconds.
+ * @allow_frame_duration_normalization: Permit SPF to normalize frame duration.
+ * @min_normalized_frame_dur_us: Minimum normalized frame duration in microseconds.
+ * @max_normalized_frame_dur_us: Maximum normalized frame duration in microseconds.
+ *
+ * This structure configures the frame duration for the Audio IF hardware
+ * endpoint and, when enabled, the allowed normalization range.
+ */
 struct param_id_hw_ep_frame_duration {
 	uint32_t frame_duration_in_us;
 	uint32_t allow_frame_duration_normalization;

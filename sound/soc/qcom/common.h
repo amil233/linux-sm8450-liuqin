@@ -7,14 +7,14 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <sound/soc.h>
 
+#define LPASS_MAX_PORT			(LPI_MI2S_TX_6 + 1)
+
 struct qcom_snd_tdm_slot_cfg {
 	unsigned int tx_mask;
 	unsigned int rx_mask;
 	unsigned int slots;
 	unsigned int slot_width;
 };
-
-#define LPASS_MAX_PORT			(SENARY_MI2S_TX + 1)
 
 int qcom_snd_parse_of(struct snd_soc_card *card);
 int qcom_snd_get_dai_tdm_slots(struct snd_soc_pcm_runtime *rtd,

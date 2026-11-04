@@ -3147,10 +3147,17 @@ static int cam_cc_sm8450_probe(struct platform_device *pdev)
 		/*
 		 * Use the SM8475 IFE_0 and TITAN_TOP GDSC descriptions tested on
 		 * liuqin (PWR_ON polling + RETAIN_FF); SM8450 keeps CFG_GDSCR
-		 * polling.  Re-parent the other TITAN_TOP children as well.
+		 * polling.  Re-parent every TITAN_TOP child: once the old
+		 * titan_top_gdsc leaves the descriptor table its pd is never
+		 * pm_genpd_init()ed, so a child left pointing at it makes
+		 * genpd_add_subdomain walk an uninitialised parent_links list
+		 * and oops while the camcc module loads.
 		 */
 		cam_cc_sm8450_gdscs[IFE_0_GDSC] = &sm8475_ife_0_gdsc;
 		cam_cc_sm8450_gdscs[TITAN_TOP_GDSC] = &sm8475_titan_top_gdsc;
+		bps_gdsc.parent = &sm8475_titan_top_gdsc.pd;
+		ipe_0_gdsc.parent = &sm8475_titan_top_gdsc.pd;
+		sbi_gdsc.parent = &sm8475_titan_top_gdsc.pd;
 		ife_1_gdsc.parent = &sm8475_titan_top_gdsc.pd;
 		ife_2_gdsc.parent = &sm8475_titan_top_gdsc.pd;
 		sfe_0_gdsc.parent = &sm8475_titan_top_gdsc.pd;

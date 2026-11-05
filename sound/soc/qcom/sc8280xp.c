@@ -225,6 +225,20 @@ static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 					SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
 
+	/*
+	 * TDM backends carry the negotiated stream format straight to the DSP
+	 * TDM port and to the codec. The defaults below describe the WCD/DP0
+	 * codec-DMA backends, and forcing them here makes the AudioReach TDM
+	 * sink reject the stream in prepare(): its wire format is fixed at
+	 * 48 kHz, 24-bit, four 32-bit slots (see audioreach_tdm_set_media_format()).
+	 */
+	switch (cpu_dai->id) {
+	case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
+		return 0;
+	default:
+		break;
+	}
+
 	rate->min = rate->max = 48000;
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 	channels->min = 2;

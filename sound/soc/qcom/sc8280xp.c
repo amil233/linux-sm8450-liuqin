@@ -139,9 +139,39 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 		}
 	}
 
+	/*
+	 * A TDM backend carries more than the two slots an I2S link has, so the
+	 * codec must be framed with DSP_A: it latches on the frame-sync pulse
+	 * and then counts the remaining slots.  The board-wide codec_dai_fmt
+	 * only describes the MI2S (HDMI) links, hence the override here.
+	 */
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_dai_set_fmt(codec_dai,
+					  SND_SOC_DAIFMT_CBC_CFC |
+					  SND_SOC_DAIFMT_NB_NF |
+					  SND_SOC_DAIFMT_DSP_A);
+		if (ret && ret != -ENOTSUPP)
+			return ret;
+	}
+
 	ret = qcom_snd_apply_dai_tdm_slots_cfg(rtd, &cpu_cfg, &codec_cfg);
 	if (ret)
 		return ret;
+
+	/*
+	 * One codec per slot.  Amplifiers on a TDM bus each decode a single
+	 * slot, and the link lists them in frame order, so codec N takes slot
+	 * N; the shared codec_cfg above only ever restores the ASP defaults.
+	 */
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		if (i >= (int)cpu_cfg.slots)
+			break;
+		ret = snd_soc_dai_set_tdm_slot(codec_dai, 0, BIT(i),
+					       cpu_cfg.slots,
+					       cpu_cfg.slot_width);
+		if (ret && ret != -ENOTSUPP)
+			return ret;
+	}
 
 	bclk_freq = snd_soc_tdm_params_to_bclk(params, cpu_cfg.slot_width, cpu_cfg.slots, 1);
 	if (bclk_freq <= 0)

@@ -177,6 +177,30 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	if (bclk_freq <= 0)
 		return -EINVAL;
 
+	/*
+	 * TDM codecs derive their internal clocks from the bit clock.  Set both
+	 * the DAI and the component sysclk: the cs35l41 PLL is only reachable
+	 * through the component callback, and an amplifier whose PLL never
+	 * locks stays muted even though every ASoC call above reports success.
+	 */
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_dai_set_sysclk(codec_dai, 0, bclk_freq,
+					     SND_SOC_CLOCK_IN);
+		if (ret && ret != -ENOTSUPP) {
+			dev_err(rtd->dev, "%s: failed to set codec dai sysclk on %s: %d\n",
+				__func__, codec_dai->name, ret);
+			return ret;
+		}
+
+		ret = snd_soc_component_set_sysclk(codec_dai->component, 0, 0,
+						   bclk_freq, SND_SOC_CLOCK_IN);
+		if (ret && ret != -ENOTSUPP) {
+			dev_err(rtd->dev, "%s: failed to set codec component sysclk on %s: %d\n",
+				__func__, codec_dai->name, ret);
+			return ret;
+		}
+	}
+
 	if (data->priv->mi2s_bclk_enable) {
 		ret = snd_soc_dai_set_sysclk(cpu_dai, LPAIF_MI2S_BCLK, bclk_freq,
 					     SND_SOC_CLOCK_IN);

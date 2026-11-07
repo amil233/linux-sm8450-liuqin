@@ -729,6 +729,40 @@ static int cs35l41_set_channel_map(struct snd_soc_dai *dai, unsigned int tx_n,
 	return cs35l41_set_channels(cs35l41->dev, cs35l41->regmap, tx_n, tx_slot, rx_n, rx_slot);
 }
 
+/*
+ * Program the ASP receive slots from the TDM mask.  Each set bit names a slot
+ * of the frame the host drives, and the codec's receive channels take them in
+ * order: ASPRX1 gets the first slot, ASPRX2 the second.  An empty mask (or no
+ * slots) restores the hardware defaults, ASPRX1 in slot 0 and ASPRX2 in slot
+ * 1, which is what a plain stereo I2S link uses.
+ */
+static int cs35l41_set_tdm_slot(struct snd_soc_dai *dai,
+				unsigned int tx_mask, unsigned int rx_mask,
+				int slots, int slot_width)
+{
+	struct cs35l41_private *cs35l41 = snd_soc_component_get_drvdata(dai->component);
+	unsigned int rx_slot[2] = { 0, 1 };
+	unsigned long mask = rx_mask;
+	unsigned int bit;
+	unsigned int n = 0;
+
+	if (!slots || !mask)
+		return cs35l41_set_channels(cs35l41->dev, cs35l41->regmap,
+					    0, NULL, ARRAY_SIZE(rx_slot), rx_slot);
+
+	for_each_set_bit(bit, &mask, BITS_PER_TYPE(mask)) {
+		if (n == ARRAY_SIZE(rx_slot)) {
+			dev_warn(cs35l41->dev,
+				 "TDM mask %#x names more slots than the codec receive channels\n",
+				 rx_mask);
+			break;
+		}
+		rx_slot[n++] = bit;
+	}
+
+	return cs35l41_set_channels(cs35l41->dev, cs35l41->regmap, 0, NULL, n, rx_slot);
+}
+
 static int cs35l41_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	struct cs35l41_private *cs35l41 = snd_soc_component_get_drvdata(dai->component);
@@ -1009,6 +1043,7 @@ static const struct snd_soc_dai_ops cs35l41_ops = {
 	.hw_params = cs35l41_pcm_hw_params,
 	.set_sysclk = cs35l41_dai_set_sysclk,
 	.set_channel_map = cs35l41_set_channel_map,
+	.set_tdm_slot = cs35l41_set_tdm_slot,
 };
 
 #define CS35L41_RATES (		    \

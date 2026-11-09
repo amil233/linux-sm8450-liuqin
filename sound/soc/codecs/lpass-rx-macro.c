@@ -3878,12 +3878,8 @@ static int rx_macro_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = devm_pm_clk_create(dev);
+	ret = lpass_macro_pm_clk_create(dev);
 	if (ret)
-		return ret;
-
-	ret = of_pm_clk_add_clks(dev);
-	if (ret < 0)
 		return ret;
 
 	pm_runtime_set_autosuspend_delay(dev, 100);

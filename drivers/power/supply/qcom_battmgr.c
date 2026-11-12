@@ -4,6 +4,7 @@
  * Copyright (c) 2022, Linaro Ltd
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
+#include <linux/of.h>
 #include <linux/unaligned.h>
 #include <linux/auxiliary_bus.h>
 #include <linux/ctype.h>

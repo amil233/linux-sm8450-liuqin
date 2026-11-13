@@ -41,6 +41,7 @@ properties:
               - qcom,sm6115-cpu-bwmon
               - qcom,sm6350-llcc-bwmon
               - qcom,sm8250-cpu-bwmon
+              - qcom,sm8475-cpu-bwmon
               - qcom,sm8550-cpu-bwmon
               - qcom,sm8650-cpu-bwmon
               - qcom,sm8750-cpu-bwmon
@@ -58,6 +59,7 @@ properties:
               - qcom,shikra-cpu-bwmon
               - qcom,sm6350-cpu-bwmon
               - qcom,sm8250-llcc-bwmon
+              - qcom,sm8475-llcc-bwmon
               - qcom,sm8550-llcc-bwmon
               - qcom,sm8650-llcc-bwmon
               - qcom,x1e80100-llcc-bwmon

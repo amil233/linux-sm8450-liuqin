@@ -58,6 +58,39 @@ static const struct snd_soc_dapm_widget max98090_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Speaker", NULL),
 };
 
+enum sc8280xp_jack_setup {
+	SC8280XP_JACK_SETUP_NONE,
+	SC8280XP_JACK_SETUP_WCD,
+};
+
+/**
+ * struct sc8280xp_dai_data - per-DAI board overrides
+ * @id: CPU DAI ID this entry applies to
+ * @mclk_rate: fixed MCLK rate in Hz, 0 keeps the rate derived from params
+ * @codec_sysclk_set: program the codec DAI sysclk with the bit clock
+ * @codec_component_sysclk: also program the codec component sysclk
+ * @codec_dai_fmt: codec DAI format override, 0 keeps the card-wide format
+ * @codec_tdm_slot_each: give codec N TDM slot N instead of the shared mask
+ * @mi2s_mclk_enable: program the CPU MCLK for this DAI
+ * @mi2s_bclk_enable: program the CPU BCLK for this DAI
+ * @jack_setup: jack setup path for this DAI
+ */
+struct sc8280xp_dai_data {
+	unsigned int id;
+	unsigned int mclk_rate;
+	bool codec_sysclk_set;
+	bool codec_component_sysclk;
+	unsigned int codec_dai_fmt;
+	bool codec_tdm_slot_each;
+	bool mi2s_mclk_enable;
+	bool mi2s_bclk_enable;
+	enum sc8280xp_jack_setup jack_setup;
+};
+
+#define SC8280XP_DAI_DATA(...) \
+	.dai_data = (const struct sc8280xp_dai_data[]) { __VA_ARGS__ }, \
+	.num_dai_data = ARRAY_SIZE(((const struct sc8280xp_dai_data[]) { __VA_ARGS__ }))
+
 struct qcom_snd_soc_common {
 	const char *driver_name;
 	const struct snd_soc_dapm_widget *dapm_widgets;
@@ -71,6 +104,8 @@ struct qcom_snd_soc_common {
 	bool mi2s_mclk_enable;
 	bool mi2s_bclk_enable;
 	bool wcd_jack;
+	const struct sc8280xp_dai_data *dai_data;
+	size_t num_dai_data;
 	int (*snd_prepare)(struct snd_pcm_substream *substream);
 };
 
@@ -82,6 +117,20 @@ struct sc8280xp_snd_data {
 	const struct qcom_snd_soc_common *priv;
 	bool jack_setup;
 };
+
+static const struct sc8280xp_dai_data *
+sc8280xp_get_dai_data(const struct qcom_snd_soc_common *common,
+		      unsigned int id)
+{
+	size_t i;
+
+	for (i = 0; i < common->num_dai_data; i++) {
+		if (common->dai_data[i].id == id)
+			return &common->dai_data[i];
+	}
+
+	return NULL;
+}
 
 static inline int sc8280xp_get_mclk_freq(struct snd_pcm_hw_params *params)
 {
@@ -112,12 +161,24 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	const struct sc8280xp_dai_data *dai_data;
 	struct snd_soc_dai *codec_dai;
 	struct qcom_snd_tdm_slot_cfg cpu_cfg;
 	struct qcom_snd_tdm_slot_cfg codec_cfg;
+	unsigned int codec_fmt = data->priv->codec_dai_fmt;
+	bool codec_sysclk_set = data->priv->codec_sysclk_set;
+	bool mi2s_bclk_enable = data->priv->mi2s_bclk_enable;
 	int bclk_freq;
 	int ret;
 	int i;
+
+	dai_data = sc8280xp_get_dai_data(data->priv, cpu_dai->id);
+	if (dai_data) {
+		codec_sysclk_set = dai_data->codec_sysclk_set;
+		mi2s_bclk_enable = dai_data->mi2s_bclk_enable;
+		if (dai_data->codec_dai_fmt)
+			codec_fmt = dai_data->codec_dai_fmt;
+	}
 
 	ret = qcom_snd_get_dai_tdm_slots(rtd, &cpu_cfg, &codec_cfg);
 	if (ret)
@@ -130,28 +191,12 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	if (ret && ret != -ENOTSUPP)
 		return ret;
 
-	if (data->priv->codec_dai_fmt) {
+	if (codec_fmt) {
 		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			ret = snd_soc_dai_set_fmt(codec_dai,
-						  data->priv->codec_dai_fmt);
+			ret = snd_soc_dai_set_fmt(codec_dai, codec_fmt);
 			if (ret && ret != -ENOTSUPP)
 				return ret;
 		}
-	}
-
-	/*
-	 * A TDM backend carries more than the two slots an I2S link has, so the
-	 * codec must be framed with DSP_A: it latches on the frame-sync pulse
-	 * and then counts the remaining slots.  The board-wide codec_dai_fmt
-	 * only describes the MI2S (HDMI) links, hence the override here.
-	 */
-	for_each_rtd_codec_dais(rtd, i, codec_dai) {
-		ret = snd_soc_dai_set_fmt(codec_dai,
-					  SND_SOC_DAIFMT_CBC_CFC |
-					  SND_SOC_DAIFMT_NB_NF |
-					  SND_SOC_DAIFMT_DSP_A);
-		if (ret && ret != -ENOTSUPP)
-			return ret;
 	}
 
 	ret = qcom_snd_apply_dai_tdm_slots_cfg(rtd, &cpu_cfg, &codec_cfg);
@@ -163,14 +208,16 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	 * slot, and the link lists them in frame order, so codec N takes slot
 	 * N; the shared codec_cfg above only ever restores the ASP defaults.
 	 */
-	for_each_rtd_codec_dais(rtd, i, codec_dai) {
-		if (i >= (int)cpu_cfg.slots)
-			break;
-		ret = snd_soc_dai_set_tdm_slot(codec_dai, 0, BIT(i),
-					       cpu_cfg.slots,
-					       cpu_cfg.slot_width);
-		if (ret && ret != -ENOTSUPP)
-			return ret;
+	if (dai_data && dai_data->codec_tdm_slot_each) {
+		for_each_rtd_codec_dais(rtd, i, codec_dai) {
+			if (i >= (int)cpu_cfg.slots)
+				break;
+			ret = snd_soc_dai_set_tdm_slot(codec_dai, 0, BIT(i),
+						       cpu_cfg.slots,
+						       cpu_cfg.slot_width);
+			if (ret && ret != -ENOTSUPP)
+				return ret;
+		}
 	}
 
 	bclk_freq = snd_soc_tdm_params_to_bclk(params, cpu_cfg.slot_width, cpu_cfg.slots, 1);
@@ -178,48 +225,40 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 
 	/*
-	 * TDM codecs derive their internal clocks from the bit clock.  Set both
-	 * the DAI and the component sysclk: the cs35l41 PLL is only reachable
-	 * through the component callback, and an amplifier whose PLL never
-	 * locks stays muted even though every ASoC call above reports success.
+	 * TDM codecs derive their internal clocks from the bit clock.  Some
+	 * codecs, such as the cs35l41, only expose their PLL through the
+	 * component callback, so boards can ask for both.
 	 */
-	for_each_rtd_codec_dais(rtd, i, codec_dai) {
-		ret = snd_soc_dai_set_sysclk(codec_dai, 0, bclk_freq,
-					     SND_SOC_CLOCK_IN);
-		if (ret && ret != -ENOTSUPP) {
-			dev_err(rtd->dev, "%s: failed to set codec dai sysclk on %s: %d\n",
-				__func__, codec_dai->name, ret);
-			return ret;
-		}
+	if (codec_sysclk_set) {
+		for_each_rtd_codec_dais(rtd, i, codec_dai) {
+			ret = snd_soc_dai_set_sysclk(codec_dai, 0, bclk_freq,
+						     SND_SOC_CLOCK_IN);
+			if (ret && ret != -ENOTSUPP) {
+				dev_err(rtd->dev, "%s: failed to set codec dai sysclk on %s: %d\n",
+					__func__, codec_dai->name, ret);
+				return ret;
+			}
 
-		ret = snd_soc_component_set_sysclk(codec_dai->component, 0, 0,
-						   bclk_freq, SND_SOC_CLOCK_IN);
-		if (ret && ret != -ENOTSUPP) {
-			dev_err(rtd->dev, "%s: failed to set codec component sysclk on %s: %d\n",
-				__func__, codec_dai->name, ret);
-			return ret;
+			if (!dai_data || !dai_data->codec_component_sysclk)
+				continue;
+
+			ret = snd_soc_component_set_sysclk(codec_dai->component, 0, 0,
+							   bclk_freq, SND_SOC_CLOCK_IN);
+			if (ret && ret != -ENOTSUPP) {
+				dev_err(rtd->dev, "%s: failed to set codec component sysclk on %s: %d\n",
+					__func__, codec_dai->name, ret);
+				return ret;
+			}
 		}
 	}
 
-	if (data->priv->mi2s_bclk_enable) {
+	if (mi2s_bclk_enable) {
 		ret = snd_soc_dai_set_sysclk(cpu_dai, LPAIF_MI2S_BCLK, bclk_freq,
 					     SND_SOC_CLOCK_IN);
 		if (ret && ret != -ENOTSUPP) {
 			dev_err(rtd->dev, "%s: failed to set cpu sysclk: %d\n",
 				__func__, ret);
 			return ret;
-		}
-	}
-
-	if (data->priv->codec_sysclk_set) {
-		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			ret = snd_soc_dai_set_sysclk(codec_dai, 0, bclk_freq,
-						     SND_SOC_CLOCK_IN);
-			if (ret && ret != -ENOTSUPP) {
-				dev_err(rtd->dev, "%s: failed to set codec sysclk on %s: %d\n",
-					__func__, codec_dai->name, ret);
-				return ret;
-			}
 		}
 	}
 
@@ -230,9 +269,12 @@ static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	const struct sc8280xp_dai_data *dai_data;
 	struct snd_soc_card *card = rtd->card;
 	struct snd_soc_jack *dp_jack  = NULL;
 	int dp_pcm_id = 0;
+
+	dai_data = sc8280xp_get_dai_data(data->priv, cpu_dai->id);
 
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
@@ -263,10 +305,21 @@ static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
 	if (dp_jack)
 		return qcom_snd_dp_jack_setup(rtd, dp_jack, dp_pcm_id);
 
-	if (data->priv->wcd_jack)
-		return qcom_snd_wcd_jack_setup(rtd, &data->jack, &data->jack_setup);
+	if (!dai_data) {
+		if (data->priv->wcd_jack)
+			return qcom_snd_wcd_jack_setup(rtd, &data->jack,
+						       &data->jack_setup);
 
-	return 0;
+		return 0;
+	}
+
+	switch (dai_data->jack_setup) {
+	case SC8280XP_JACK_SETUP_WCD:
+		return qcom_snd_wcd_jack_setup(rtd, &data->jack,
+					       &data->jack_setup);
+	default:
+		return 0;
+	}
 }
 
 static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
@@ -319,9 +372,25 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
+	const struct sc8280xp_dai_data *dai_data;
+	unsigned int codec_fmt = data->priv->codec_dai_fmt;
+	bool codec_sysclk_set = data->priv->codec_sysclk_set;
+	bool mi2s_mclk_enable = data->priv->mi2s_mclk_enable;
+	bool mi2s_bclk_enable = data->priv->mi2s_bclk_enable;
 	int mclk_freq = sc8280xp_get_mclk_freq(params);
 	int bclk_freq = sc8280xp_get_bclk_freq(params);
 	int ret;
+
+	dai_data = sc8280xp_get_dai_data(data->priv, cpu_dai->id);
+	if (dai_data) {
+		codec_sysclk_set = dai_data->codec_sysclk_set;
+		mi2s_mclk_enable = dai_data->mi2s_mclk_enable;
+		mi2s_bclk_enable = dai_data->mi2s_bclk_enable;
+		if (dai_data->mclk_rate)
+			mclk_freq = dai_data->mclk_rate;
+		if (dai_data->codec_dai_fmt)
+			codec_fmt = dai_data->codec_dai_fmt;
+	}
 
 	switch (cpu_dai->id) {
 	case PRIMARY_MI2S_RX ... QUATERNARY_MI2S_TX:
@@ -332,14 +401,13 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
 		if (ret && ret != -ENOTSUPP)
 			return ret;
 
-		if (data->priv->codec_dai_fmt) {
-			ret = snd_soc_dai_set_fmt(codec_dai,
-						  data->priv->codec_dai_fmt);
+		if (codec_fmt) {
+			ret = snd_soc_dai_set_fmt(codec_dai, codec_fmt);
 			if (ret && ret != -ENOTSUPP)
 				return ret;
 		}
 
-		if (data->priv->mi2s_mclk_enable) {
+		if (mi2s_mclk_enable) {
 			ret = snd_soc_dai_set_sysclk(cpu_dai,
 						     LPAIF_MI2S_MCLK, mclk_freq,
 						     SND_SOC_CLOCK_OUT);
@@ -347,7 +415,7 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
 				return ret;
 		}
 
-		if (data->priv->mi2s_bclk_enable) {
+		if (mi2s_bclk_enable) {
 			ret = snd_soc_dai_set_sysclk(cpu_dai,
 						     LPAIF_MI2S_BCLK, bclk_freq,
 						     SND_SOC_CLOCK_OUT);
@@ -355,7 +423,7 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
 				return ret;
 		}
 
-		if (data->priv->codec_sysclk_set) {
+		if (codec_sysclk_set) {
 			ret = snd_soc_dai_set_sysclk(codec_dai,
 						     0, mclk_freq,
 						     SND_SOC_CLOCK_IN);
@@ -584,6 +652,25 @@ static const struct qcom_snd_soc_common sm8450_priv_data = {
 	.codec_dai_fmt = SND_SOC_DAIFMT_BC_FC |
 			 SND_SOC_DAIFMT_NB_NF |
 			 SND_SOC_DAIFMT_I2S,
+	/*
+	 * The Xiaomi tablets put the CS35L41 speaker group on the tertiary
+	 * TDM backend: DSP_A framing (the codec latches the frame sync and
+	 * counts the remaining slots), one slot per amplifier in frame order,
+	 * and the codec PLL fed from the TDM bit clock.  Boards without a
+	 * tertiary TDM backend are not affected by the entry.
+	 */
+	SC8280XP_DAI_DATA({
+		.id = TERTIARY_TDM_RX_0,
+		.mi2s_mclk_enable = true,
+		.mi2s_bclk_enable = true,
+		.codec_sysclk_set = true,
+		.codec_component_sysclk = true,
+		.codec_tdm_slot_each = true,
+		.codec_dai_fmt = SND_SOC_DAIFMT_CBC_CFC |
+				 SND_SOC_DAIFMT_NB_NF |
+				 SND_SOC_DAIFMT_DSP_A,
+		.jack_setup = SC8280XP_JACK_SETUP_WCD,
+	}),
 };
 
 static const struct qcom_snd_soc_common sm8475_priv_data = {

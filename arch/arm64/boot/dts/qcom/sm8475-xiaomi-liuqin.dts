@@ -2130,3 +2130,24 @@
 		};
 	};
 };
+
+/*
+ * The QCE accelerator inherits an "memory" interconnect path to
+ * aggre2_noc/mc_virt from sm8450.dtsi, and drivers/crypto/qce has no PM
+ * callbacks to release it. On SM8450 the path uses tag zero, which the RPMh
+ * provider treats as ALWAYS rather than as a sleep bucket, so a bound QCE
+ * would hold a permanent DDR vote.
+ *
+ * The node cannot bind on this tree in any case: the only driver matching
+ * "qcom,qce" is gated behind CONFIG_CRYPTO_DEV_QCE, which depends on
+ * (BROKEN && ARCH_QCOM) and appears in neither the arm64 defconfig nor
+ * sm8450.config. Say so in the DT rather than relying on that coincidence,
+ * so the property still holds if the symbol is ever un-BROKEN.
+ *
+ * UFS inline crypto is a separate node (the ufs "qcom,ice" phandle) and is
+ * unaffected; the module configuration, cryptobam, SCM and UFS ICE are all
+ * left as they are.
+ */
+&crypto {
+	status = "disabled";
+};

@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/xiaomipad-6pro-mainline
-          ref: liuqin-7.3
+          ref: liuqin-install
           path: project
           persist-credentials: false
       - uses: ./project/.github/actions/kernel

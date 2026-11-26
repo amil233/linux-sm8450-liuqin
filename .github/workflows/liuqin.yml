@@ -1,9 +1,9 @@
 name: Liuqin kernel
 on:
   push:
-    branches: [liuqin-7.3]
+    branches: [liuqin-7.3, liuqin-7.3-fedora]
   pull_request:
-    branches: [liuqin-7.3]
+    branches: [liuqin-7.3, liuqin-7.3-fedora]
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,7 +18,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/xiaomipad-6pro-mainline
-          ref: liuqin-install
+          # 这个分支的内核配置（含 SELinux）在集成仓的 Fedora 分支上，
+          # 所以这里要取那份，不能取 Ubuntu 线的 liuqin-install。
+          ref: liuqin-installer-fedora
           path: project
           persist-credentials: false
       - uses: ./project/.github/actions/kernel
